@@ -232,17 +232,9 @@ csv_bytes = download_df.to_csv(index=False).encode("utf-8")
 st.download_button("Descargar CSV de la vista", data=csv_bytes, file_name=f"vista_{escen}_{mode}.csv", mime="text/csv")
 
 st.caption(f"Fuente: consolidado_piso3_{escen}_{mode}.csv · Moneda: {moneda} (sin decimales) · % con 2 decimales · USDCLP={fx:.0f}")
-# app_dashboard.py
+# app_dashboard.py (versión estable, sin guardarraíl visual)
 # MVP Tarjetas Chile — Arista 1: Default/Impago (Actual vs Optimizado)
 # Requiere: streamlit, plotly, pandas, numpy
-# Datos esperados en carpeta OUT_DIR (por defecto: "out"):
-#  - default_compare_portfolio.csv
-#  - default_compare_segment.csv
-#  - default_compare_detail.csv
-#  - baseline_seg_caps.csv (opcional, auditoría)
-#
-# NOTA: La restricción EL_opt(seg) <= cap * EL_baseline(seg) ya se aplica en el modelo (Piso 3).
-#       Aquí solo verificamos y visualizamos resultados.
 
 import os
 import numpy as np
@@ -250,110 +242,50 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-# -----------------------------
-# Sidebar (configuración)
-# -----------------------------
 st.set_page_config(page_title="MVP Tarjetas Chile — Default/Impago", layout="wide")
 
+# ---------------------------
+# Sidebar
+# ---------------------------
 st.sidebar.title("Configuración")
 OUT_DIR = st.sidebar.text_input("Carpeta de salidas (OUT_DIR)", value="out")
-moneda = st.sidebar.radio("Moneda de visualización", options=["CLP", "USD"], index=0)
-fx = st.sidebar.number_input("Tipo de cambio (CLP por 1 USD)", min_value=1, value=900, step=1,
-                             help="Se usa para convertir CLP→USD cuando eliges USD.")
-st.sidebar.caption("Asegúrate de haber subido los CSV al directorio OUT_DIR del repo.")
+moneda = st.sidebar.radio("Moneda", options=["CLP","USD"], index=0)
+fx = st.sidebar.number_input("Tipo de cambio CLP/USD", min_value=1, value=900, step=1)
 
-# -----------------------------
-# Helpers de formato y conversión
-# -----------------------------
-def _fmt_number_custom(value: float, decimals: int = 2, thousand_sep: str = ".", decimal_sep: str = ","):
-    """Formatea números con separador de miles y decimales personalizados."""
-    if value is None or (isinstance(value, float) and (np.isnan(value) or np.isinf(value))):
-        return "-"
-    try:
-        neg = value < 0
-        v = abs(float(value))
-        q = int(round((v - int(v)) * (10**decimals)))
-        integer_part = int(v)
-        # miles
-        s_int = f"{integer_part:,}".replace(",", "").replace(".", "")
-        s_int = s_int.replace("_", thousand_sep)
-        if decimals == 0:
-            s = s_int
-        else:
-            s_dec = str(q).rjust(decimals, "0")
-            s = f"{s_int}{decimal_sep}{s_dec}"
-        return f"-{s}" if neg else s
-    except Exception:
-        return str(value)
+# ---------------------------
+# Helpers
+# ---------------------------
+def fmt_money(v, moneda="CLP"):
+    if v is None or pd.isna(v): return "-"
+    v = float(v)
+    if moneda=="USD":
+        v = v/float(fx)
+    return f"{v:,.0f} {moneda}"
 
-def to_currency_series(s: pd.Series, moneda: str, fx: float) -> pd.Series:
-    """Convierte CLP→USD si corresponde. Se asume que los datos fuente están en CLP."""
-    if moneda == "USD":
-        with np.errstate(divide="ignore", invalid="ignore"):
-            out = (pd.to_numeric(s, errors="coerce") / float(fx)).replace([np.inf, -np.inf], np.nan)
-        return out
-    return pd.to_numeric(s, errors="coerce")
+def fmt_pct(v, dec=2):
+    if v is None or pd.isna(v): return "-"
+    return f"{100*v:.{dec}f}%"
 
-def fmt_money(v, moneda: str) -> str:
-    """Moneda sin decimales (regla acordada)."""
-    if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
-        return f"0 {moneda}"
-    return f"{_fmt_number_custom(float(v), decimals=0)} {moneda}"
-
-def fmt_pct(v, decimals: int = 2) -> str:
-    """Porcentajes con 2 decimales (regla acordada)."""
-    if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
-        return "-"
-    return f"{_fmt_number_custom(float(v)*100.0, decimals=decimals)}%"
-
-def fmt_num(v, decimals: int = 2) -> str:
-    """Enteros con 2 decimales (regla acordada)."""
-    if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
-        return "-"
-    return _fmt_number_custom(float(v), decimals=decimals)
-
-def conv_amt(v):
-    """Convierte un escalar a la moneda seleccionada."""
-    if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
-        return v
-    return to_currency_series(pd.Series([v]), moneda, fx).iloc[0]
-
-# Tarjetas grandes para evitar truncamientos
-def big_card(title, value, subtitle=None):
-    st.markdown(
-        f"""
-        <div style="padding:14px;border:1px solid #eee;border-radius:12px;margin-bottom:10px;">
-          <div style="font-size:13px;color:#666;margin-bottom:6px;">{title}</div>
-          <div style="font-size:22px;font-weight:700;line-height:1.1;word-break:break-word;">{value}</div>
-          {f'<div style="font-size:12px;color:#888;margin-top:6px;">{subtitle}</div>' if subtitle else ''}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-# -----------------------------
+# ---------------------------
 # Cargar archivos
-# -----------------------------
+# ---------------------------
 port_path = os.path.join(OUT_DIR, "default_compare_portfolio.csv")
 segm_path = os.path.join(OUT_DIR, "default_compare_segment.csv")
 detl_path = os.path.join(OUT_DIR, "default_compare_detail.csv")
-caps_path = os.path.join(OUT_DIR, "baseline_seg_caps.csv")  # opcional
 
 missing = [p for p in [port_path, segm_path, detl_path] if not os.path.exists(p)]
-st.title("Arista 1 — Default / Impago (Actual vs Optimizado)")
+st.title("Arista 1 — Default/Impago")
 
 if missing:
     st.warning("Faltan archivos en OUT_DIR. Asegúrate de haber generado y subido:\n"
                "- default_compare_portfolio.csv\n"
                "- default_compare_segment.csv\n"
-               "- default_compare_detail.csv\n"
-               "Opcional: baseline_seg_caps.csv (auditoría).")
+               "- default_compare_detail.csv")
     st.stop()
 
 port = pd.read_csv(port_path)
 seg  = pd.read_csv(segm_path)
 det  = pd.read_csv(detl_path)
-caps = pd.read_csv(caps_path) if os.path.exists(caps_path) else None
 
 kpis = {row["kpi"]: row["value"] for _, row in port.iterrows()}
 PD_b = float(kpis.get("PD promedio ponderado (Actual)", float("nan")))
@@ -365,220 +297,73 @@ EL_drop_pct = float(kpis.get("Reducción EL (%)", (EL_b - EL_o) / EL_b if EL_b e
 EAD_b = float(kpis.get("EAD total (Actual)", 0.0))
 EAD_o = float(kpis.get("EAD total (Optimizado)", 0.0))
 
-EL_b_disp, EL_o_disp = conv_amt(EL_b), conv_amt(EL_o)
-EL_drop_disp = conv_amt(EL_drop_abs)
-EAD_b_disp, EAD_o_disp = conv_amt(EAD_b), conv_amt(EAD_o)
+# ---------------------------
+# KPIs principales
+# ---------------------------
+c1, c2, c3 = st.columns(3)
+with c1: st.metric("PD prom. Actual", fmt_pct(PD_b))
+with c2: st.metric("PD prom. Optimizado", fmt_pct(PD_o))
+with c3: st.metric("Reducción EL (%)", fmt_pct(EL_drop_pct))
 
-# -----------------------------
-# KPIs (3 filas)
-# -----------------------------
-r1c1, r1c2, r1c3 = st.columns(3)
-with r1c1: big_card("PD prom. (Actual)",     fmt_pct(PD_b, 2))
-with r1c2: big_card("PD prom. (Optimizado)", fmt_pct(PD_o, 2))
-with r1c3: big_card("Reducción EL (%)",      fmt_pct(EL_drop_pct, 2))
+c4, c5, c6 = st.columns(3)
+with c4: st.metric("EL total Actual", fmt_money(EL_b, moneda))
+with c5: st.metric("EL total Optimizado", fmt_money(EL_o, moneda))
+with c6: st.metric("Reducción EL (monto)", fmt_money(EL_drop_abs, moneda))
 
-r2c1, r2c2, r2c3 = st.columns(3)
-with r2c1: big_card(f"EL total (Actual)",     fmt_money(EL_b_disp, moneda))
-with r2c2: big_card(f"EL total (Optimizado)", fmt_money(EL_o_disp, moneda))
-with r2c3: big_card("Reducción EL (monto)",   fmt_money(EL_drop_disp, moneda))
+c7, c8 = st.columns(2)
+with c7: st.metric("EAD total Actual", fmt_money(EAD_b, moneda))
+with c8: st.metric("EAD total Optimizado", fmt_money(EAD_o, moneda))
 
-r3c1, r3c2, r3c3 = st.columns([1, 1, 1.3])
-with r3c1: big_card(f"EAD total (Actual)",     fmt_money(EAD_b_disp, moneda))
-with r3c2: big_card(f"EAD total (Optimizado)", fmt_money(EAD_o_disp, moneda))
-with r3c3:
-    st.markdown(
-        f"""
-        <div style="padding:14px;border:1px solid #d0e3ff;background:#f4f9ff;border-radius:12px;">
-          <div style="font-weight:700;margin-bottom:6px;">¿Por qué puede subir la EAD optimizada?</div>
-          <div style="font-size:13px;line-height:1.35;">
-            <b>EAD</b> (<i>Exposure at Default</i>) es la exposición si un cliente incumple.
-            En el método optimizado reasignamos exposición hacia <b>clientes más sanos</b> (menor PD×LGD).
-            Puede subir la EAD agregada y aun así <b>bajar la EL (Expected Loss)</b>, lo que mejora la rentabilidad:
-            <b>más negocio donde duele menos</b>.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with st.expander("Definiciones rápidas de KPIs"):
-    st.markdown(f"""
-- *PD (Probability of Default)*: probabilidad de impago (porcentaje).
-- *LGD (Loss Given Default)*: porcentaje de pérdida si el cliente incumple.
-- *EAD (Exposure at Default): exposición en caso de impago ({moneda}*).
-- *EL (Expected Loss): PD × LGD × EAD ({moneda}*).
-- *Reducción EL*: cuánto baja la pérdida esperada al optimizar (monto y %).
-""")
-
-st.markdown("---")
-
-# -----------------------------
-# Gráfica EL Actual vs Optimizado
-# -----------------------------
+# ---------------------------
+# Gráfica comparativa EL
+# ---------------------------
 comp_df = pd.DataFrame({
-    "Escenario": ["ACTUAL", "OPTIMIZADO"],
-    f"EL ({moneda})": [EL_b_disp, EL_o_disp]
+    "Escenario": ["Actual","Optimizado"],
+    "EL": [EL_b, EL_o]
 })
-fig_el = px.bar(
-    comp_df, x="Escenario", y=f"EL ({moneda})",
-    title="Pérdida Esperada (EL) — Actual vs Optimizado",
-    text=f"EL ({moneda})",
-    color="Escenario",
-    color_discrete_map={"ACTUAL": "#636EFA", "OPTIMIZADO": "#00CC96"}  # colores distintos
-)
-fig_el.update_traces(
-    texttemplate='%{text:,.0f}',
-    textposition='outside',
-    hovertemplate=f"%{{x}}<br>EL: %{{y:,.0f}} {moneda}<extra></extra>"
-)
-fig_el.update_layout(
-    uniformtext_minsize=12, uniformtext_mode='hide',
-    margin=dict(l=20, r=20, t=60, b=20),
-    yaxis_title=f"EL ({moneda})",
-    xaxis_title=""
-)
-st.plotly_chart(fig_el, use_container_width=True)
+fig = px.bar(comp_df, x="Escenario", y="EL", text="EL",
+             color="Escenario", color_discrete_map={"Actual":"#636EFA","Optimizado":"#00CC96"})
+fig.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+fig.update_layout(title="Pérdida Esperada (EL) Actual vs Optimizado")
+st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------------
-# Comparación por segmento (SIN guardarraíl; ya lo impone el modelo)
-# -----------------------------
-st.subheader("Comparación por segmento (con restricción aplicada en el modelo)")
-
-# SEGMENTO en mayúsculas
+# ---------------------------
+# Comparación por segmento
+# ---------------------------
+st.subheader("Comparación por segmento")
 if "segmento" in seg.columns:
     seg["segmento"] = seg["segmento"].astype(str).str.upper()
+st.dataframe(seg, use_container_width=True)
 
-# Verificación de cumplimiento: EL_opt <= EL_actual (por seguridad)
-viol = []
-if all(c in seg.columns for c in ["segmento", "EL_actual", "EL_opt"]):
-    for _, row in seg.iterrows():
-        if pd.notnull(row["EL_actual"]) and pd.notnull(row["EL_opt"]):
-            if row["EL_opt"] - row["EL_actual"] > 1e-6:
-                viol.append(row["segmento"])
-if viol:
-    st.error("⚠️ Hallados segmentos con EL optimizada > EL actual (revisa el modelo): " + ", ".join(sorted(set(viol))))
-else:
-    st.success("✅ Verificado: en todos los segmentos, EL optimizada ≤ EL actual (según restricción del modelo).")
-
-# Mostrar tabla formateada
-seg_disp = seg.copy()
-for col in ["EAD_actual", "EAD_opt", "EL_actual", "EL_opt", "EL_reduccion_abs"]:
-    if col in seg_disp.columns:
-        seg_disp[col] = to_currency_series(seg_disp[col], moneda, fx).apply(lambda v: fmt_money(v, moneda))
-for col in ["PD_actual", "PD_opt", "EL_reduccion_pct"]:
-    if col in seg_disp.columns:
-        seg_disp[col] = seg_disp[col].apply(lambda v: fmt_pct(v, 2))
-if "n_clientes" in seg_disp.columns:
-    seg_disp["n_clientes"] = seg_disp["n_clientes"].apply(lambda v: fmt_num(v, 2))
-
-st.dataframe(seg_disp, use_container_width=True)
-
-# Panel: nombre → significado
 with st.expander("¿Qué significa cada segmento?"):
-    st.markdown("*Catálogo de segmentos (nombre → significado):*")
-    seg_map = {
-        "ALTO INGRESO": "Clientes con mayor ingreso y menor riesgo.",
-        "MEDIO INGRESO": "Base masiva, riesgo medio; sensibilidad a tasa.",
-        "BAJO INGRESO": "Mayor PD; requiere límites prudentes.",
-        "PYME": "Flujos variables; límites/tasas diferenciadas.",
-        "EMPRENDEDOR": "Ingresos volátiles; histórico corto.",
-        "NUEVO": "Poca historia crediticia; PD incierto.",
-        "MASS": "Segmento masivo; heterogéneo, requiere microsegmentación.",
-    }
-    detected = seg["segmento"].dropna().unique().tolist() if "segmento" in seg.columns else []
-    if detected:
-        for name in sorted(detected):
-            meaning = seg_map.get(name, "Definición pendiente (ajustar con el banco).")
-            st.markdown(f"- *{name}* → {meaning}")
-    else:
-        st.info("No se detectaron segmentos; revisa el archivo de entrada.")
+    st.markdown("""
+    - *ALTO INGRESO* → Clientes con mayor ingreso y menor riesgo.
+    - *MEDIO INGRESO* → Base masiva, riesgo medio.
+    - *BAJO INGRESO* → Mayor PD; requiere límites prudentes.
+    - *PYME* → Flujos variables; límites/tasas diferenciadas.
+    - *EMPRENDEDOR* → Ingresos volátiles; histórico corto.
+    - *NUEVO* → Poca historia crediticia; PD incierto.
+    - *MASS* → Segmento masivo heterogéneo.
+    """)
 
-# -----------------------------
-# Gráfica: Segmentos por Reducción de EL (sin 'Top 15')
-# -----------------------------
-seg_plot = seg.copy()
-if "EL_reduccion_abs" in seg_plot.columns:
-    seg_plot["EL_reduccion_abs_disp"] = to_currency_series(seg_plot["EL_reduccion_abs"], moneda, fx)
-    fig_seg = px.bar(
-        seg_plot.sort_values("EL_reduccion_abs", ascending=False),
-        y="segmento", x="EL_reduccion_abs_disp",
-        orientation="h",
-        title=f"Segmentos por Reducción de EL ({moneda})",
-        text="EL_reduccion_abs_disp",
-        color="EL_reduccion_abs_disp",
-        color_continuous_scale="Blues"
-    )
-    fig_seg.update_traces(
-        texttemplate='%{text:,.0f}',
-        textposition='outside',
-        hovertemplate=f"Segmento: %{{y}}<br>Reducción EL: %{{x:,.0f}} {moneda}<extra></extra>"
-    )
-    fig_seg.update_layout(
-        coloraxis_showscale=False,
-        yaxis=dict(categoryorder='total ascending'),
-        margin=dict(l=20, r=20, t=60, b=20),
-        xaxis_title=f"Reducción EL ({moneda})", yaxis_title="Segmento"
-    )
-    st.plotly_chart(fig_seg, use_container_width=True)
+# ---------------------------
+# Gráfica reducción EL por segmento
+# ---------------------------
+if "EL_reduccion_abs" in seg.columns:
+    fig2 = px.bar(seg.sort_values("EL_reduccion_abs", ascending=False),
+                  x="EL_reduccion_abs", y="segmento",
+                  orientation="h", text="EL_reduccion_abs",
+                  title="Segmentos por Reducción de EL",
+                  color="EL_reduccion_abs", color_continuous_scale="Blues")
+    fig2.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+    st.plotly_chart(fig2, use_container_width=True)
 
-    with st.expander("¿Qué muestra esta gráfica?"):
-        st.markdown(f"""
-Ordena los *segmentos* por la *reducción absoluta* de la *Pérdida Esperada (EL)* al aplicar nuestro modelo (en *{moneda}*).
-- Barras más largas ⇒ mayor ahorro de EL en ese segmento.
-- Dado que la restricción se aplicó en el *modelo*, ningún segmento empeora vs. su baseline.
-""")
-else:
-    st.info("La columna 'EL_reduccion_abs' no está disponible en default_compare_segment.csv.")
-
-# -----------------------------
-# Detalle por cliente + glosario
-# -----------------------------
+# ---------------------------
+# Detalle por cliente
+# ---------------------------
 st.subheader("Detalle por cliente (muestra)")
-det_view = det.copy()
-if "segmento" in det_view.columns:
-    det_view["segmento"] = det_view["segmento"].astype(str).str.upper()
-
-for col in ["pd_baseline", "pd_opt"]:
-    if col in det_view.columns:
-        det_view[col] = det_view[col].apply(lambda v: fmt_pct(v, 2))
-for col in ["ead_baseline", "ead_opt", "EL_baseline", "EL_opt"]:
-    if col in det_view.columns:
-        det_view[col] = to_currency_series(det_view[col], moneda, fx).apply(lambda v: fmt_money(v, moneda))
-
-st.dataframe(det_view.head(50), use_container_width=True)
-
-st.download_button(
-    "Descargar detalle completo (CSV)",
-    data=det.to_csv(index=False).encode("utf-8"),
-    file_name="default_compare_detail.csv",
-    mime="text/csv",
-)
-
-with st.expander("Glosario de columnas (fila 1 del cuadro)"):
-    st.markdown(f"""
-- *id_cliente*: identificador único del cliente.
-- *segmento*: grupo del cliente (en MAYÚSCULA).
-- *region*: zona geográfica.
-- *pd_baseline (Probability of Default): PD del **método actual* (promedio por segmento).
-- *pd_opt (Probability of Default): PD de **nuestro modelo* (por cliente).
-- *lgd_baseline (Loss Given Default): % de pérdida si incumple (método actual*).
-- *lgd_opt (Loss Given Default): % de pérdida si incumple (nuestro modelo*).
-- *ead_baseline (Exposure at Default): exposición al default en el **método actual* (*{moneda}*).
-- *ead_opt (Exposure at Default): exposición al default en **nuestro modelo* (*{moneda}*).
-- *EL_baseline (Expected Loss): PD×LGD×EAD en **método actual* (*{moneda}*).
-- *EL_opt (Expected Loss): PD×LGD×EAD en **nuestro modelo* (*{moneda}*).
-""")
-
-# -----------------------------
-# Auditoría opcional de la restricción (caps)
-# -----------------------------
-st.markdown("---")
-st.subheader("Auditoría de restricción por segmento (opcional)")
-if caps is not None and all(c in caps.columns for c in ["segmento", "EL_baseline_segment", "EL_cap_segment"]):
-    caps_view = caps.copy()
-    caps_view["segmento"] = caps_view["segmento"].astype(str).str.upper()
-    for col in ["EL_baseline_segment", "EL_cap_segment"]:
-        caps_view[col] = to_currency_series(caps_view[col], moneda, fx).apply(lambda v: fmt_money(v, moneda))
-    st.dataframe(caps_view, use_container_width=True)
-else:
-    st.info("Sube 'baseline_seg_caps.csv' a OUT_DIR para ver la auditoría de la restricción por segmento.")
+st.dataframe(det.head(50), use_container_width=True)
+st.download_button("Descargar detalle completo (CSV)",
+                   data=det.to_csv(index=False).encode("utf-8"),
+                   file_name="default_compare_detail.csv",
+                   mime="text/csv")

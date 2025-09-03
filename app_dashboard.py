@@ -241,7 +241,6 @@ import streamlit as st
 
 st.markdown("## Arista 1 — Default / Impago (Actual vs Optimizado)")
 
-# rutas esperadas generadas por la Celda 24-Default-Compare
 port_path = os.path.join(OUT_DIR, "default_compare_portfolio.csv")
 segm_path = os.path.join(OUT_DIR, "default_compare_segment.csv")
 detl_path = os.path.join(OUT_DIR, "default_compare_detail.csv")
@@ -249,11 +248,10 @@ detl_path = os.path.join(OUT_DIR, "default_compare_detail.csv")
 if not (os.path.exists(port_path) and os.path.exists(detl_path)):
     st.info(
         "No encontré los archivos comparativos de la Arista 1. "
-        "Corre la *Celda 24-Default-Compare* en el notebook (Piso 3) "
-        "para generar: default_compare_portfolio.csv, default_compare_segment.csv y default_compare_detail.csv."
+        "Corre la *Celda 24-Default-Compare* en el notebook (Piso 3)."
     )
 else:
-    # --- Carga KPIs de portafolio
+    # ---------- Carga KPIs ----------
     port = pd.read_csv(port_path)
     kpis = {row["kpi"]: row["value"] for _, row in port.iterrows()}
 
@@ -266,17 +264,14 @@ else:
     EAD_b = float(kpis.get("EAD total (Actual)", 0.0))
     EAD_o = float(kpis.get("EAD total (Optimizado)", 0.0))
 
-    # Conversión de moneda para EL/EAD según sidebar (moneda, fx)
     def conv_amt(v):
         return to_currency(pd.Series([v]), moneda, fx).iloc[0] if pd.notnull(v) else v
 
-    EL_b_disp   = conv_amt(EL_b)
-    EL_o_disp   = conv_amt(EL_o)
-    EL_drop_disp= conv_amt(EL_drop_abs)
-    EAD_b_disp  = conv_amt(EAD_b)
-    EAD_o_disp  = conv_amt(EAD_o)
+    EL_b_disp, EL_o_disp = conv_amt(EL_b), conv_amt(EL_o)
+    EAD_b_disp, EAD_o_disp = conv_amt(EAD_b), conv_amt(EAD_o)
+    EL_drop_disp = conv_amt(EL_drop_abs)
 
-    # ---------- Tarjetas: helper para que no se trunque el número ----------
+    # ---------- helper de tarjetas para evitar truncamiento ----------
     def big_card(title, value, subtitle=None):
         st.markdown(
             f"""
@@ -289,24 +284,24 @@ else:
             unsafe_allow_html=True
         )
 
-    # ---------- KPIs comparativos ----------
-    c1, c2, c3 = st.columns(3)
-    big_card("PD prom. (Actual)",    fmt_pct(PD_b, 2))
-    big_card("PD prom. (Optimizado)",fmt_pct(PD_o, 2))
-    big_card("Reducción EL (%)",     fmt_pct(EL_drop_pct, 2))
+    # ========== (1) FILAS DE KPIs EXACTAS COMO PEDISTE ==========
+    # Fila 1: PD prom actual | PD prom optimizado | Reducción EL %
+    r1c1, r1c2, r1c3 = st.columns(3)
+    with r1c1: big_card("PD prom. (Actual)",     fmt_pct(PD_b, 2))
+    with r1c2: big_card("PD prom. (Optimizado)", fmt_pct(PD_o, 2))
+    with r1c3: big_card("Reducción EL (%)",      fmt_pct(EL_drop_pct, 2))
 
-    c4, c5, c6 = st.columns(3)
-    big_card(f"EL total (Actual)",      fmt_money(EL_b_disp, moneda))
-    big_card(f"EL total (Optimizado)",  fmt_money(EL_o_disp, moneda))
-    big_card("Reducción EL (monto)",    fmt_money(EL_drop_disp, moneda))
+    # Fila 2: EL total actual | EL total optimizado | Reducción EL monto
+    r2c1, r2c2, r2c3 = st.columns(3)
+    with r2c1: big_card(f"EL total (Actual)",     fmt_money(EL_b_disp, moneda))
+    with r2c2: big_card(f"EL total (Optimizado)", fmt_money(EL_o_disp, moneda))
+    with r2c3: big_card("Reducción EL (monto)",   fmt_money(EL_drop_disp, moneda))
 
-    # ---------- EAD + explicación AL LADO ----------
-    c7, c8, c9 = st.columns([1,1,1.2])
-    with c7:
-        big_card(f"EAD total (Actual)",     fmt_money(EAD_b_disp, moneda))
-    with c8:
-        big_card(f"EAD total (Optimizado)", fmt_money(EAD_o_disp, moneda))
-    with c9:
+    # Fila 3: EAD total actual | EAD total optimizado | CUADRO EXPLICATIVO
+    r3c1, r3c2, r3c3 = st.columns([1,1,1.3])
+    with r3c1: big_card(f"EAD total (Actual)",     fmt_money(EAD_b_disp, moneda))
+    with r3c2: big_card(f"EAD total (Optimizado)", fmt_money(EAD_o_disp, moneda))
+    with r3c3:
         st.markdown(
             f"""
             <div style="padding:14px;border:1px solid #d0e3ff;background:#f4f9ff;border-radius:12px;">
@@ -314,8 +309,8 @@ else:
               <div style="font-size:13px;line-height:1.35;">
                 <b>EAD</b> (<i>Exposure at Default</i>) es la exposición si un cliente incumple.
                 En el método optimizado reasignamos exposición hacia <b>clientes más sanos</b> (menor PD×LGD).
-                Por eso, la <b>EAD agregada</b> puede subir, pero la <b>EL (Expected Loss)</b> baja,
-                mejorando la rentabilidad. En síntesis: <b>más negocio donde duele menos</b>.
+                Puede subir la EAD agregada y aun así <b>bajar la EL (Expected Loss)</b>, lo que
+                mejora la rentabilidad: <b>más negocio donde duele menos</b>.
               </div>
             </div>
             """,
@@ -333,7 +328,7 @@ else:
 
     st.markdown("---")
 
-    # ---------- Gráfico EL Actual vs Optimizado (con etiquetas) ----------
+    # ========== (2) GRÁFICA EL ACTUAL VS OPTIMIZADO (nuevo estilo con etiquetas) ==========
     comp_df = pd.DataFrame({
         "Escenario": ["ACTUAL","OPTIMIZADO"],
         f"EL ({moneda})": [EL_b_disp, EL_o_disp]
@@ -343,6 +338,7 @@ else:
         title="Pérdida Esperada (EL) — Actual vs Optimizado",
         text=f"EL ({moneda})"
     )
+    # colores distintos por escenario (Plotly asigna automáticamente, aquí forzamos orden y etiquetas)
     fig_el.update_traces(
         texttemplate='%{text:,.0f}',
         textposition='outside',
@@ -352,102 +348,126 @@ else:
         uniformtext_minsize=12, uniformtext_mode='hide',
         margin=dict(l=20,r=20,t=60,b=20),
         yaxis_title=f"EL ({moneda})",
+        xaxis_title=""
     )
     st.plotly_chart(fig_el, use_container_width=True)
 
-    # ---------- Tabla por segmento ----------
+    # ========== (3) COMPARACIÓN POR SEGMENTO CON GUARDARRAÍL ==========
     if os.path.exists(segm_path):
-        seg = pd.read_csv(segm_path)
+        seg_raw = pd.read_csv(segm_path)
 
         # SEGMENTO en mayúsculas
-        if "segmento" in seg.columns:
-            seg["segmento"] = seg["segmento"].astype(str).str.upper()
+        if "segmento" in seg_raw.columns:
+            seg_raw["segmento"] = seg_raw["segmento"].astype(str).str.upper()
 
-        # Clonar para formateo visual
-        seg_disp = seg.copy()
+        # Toggle de guardarraíl: no permitir que EL_opt supere EL_actual por segmento
+        apply_guard = st.checkbox("Aplicar guardarraíl de EL por segmento (no permitir EL optimizada > EL actual)", value=True)
+
+        seg = seg_raw.copy()
+        # Aseguramos columnas necesarias
+        for c in ["segmento","PD_actual","PD_opt","EAD_actual","EAD_opt","EL_actual","EL_opt","n_clientes"]:
+            if c not in seg.columns: seg[c] = np.nan
+
+        if apply_guard:
+            # Factor por segmento: capear EL_opt a EL_actual. Ajustamos proporcionalmente EAD_opt y EL_opt.
+            eps = 1e-9
+            seg["cap_factor"] = np.where(seg["EL_opt"] > eps, np.minimum(1.0, seg["EL_actual"] / np.maximum(seg["EL_opt"], eps)), 1.0)
+            seg["EL_opt_adj"]  = seg["EL_opt"]  * seg["cap_factor"]
+            seg["EAD_opt_adj"] = seg["EAD_opt"] * seg["cap_factor"]
+            seg["PD_opt_adj"]  = seg["PD_opt"]  # PD no cambia; solo reasignamos exposición
+        else:
+            seg["EL_opt_adj"]  = seg["EL_opt"]
+            seg["EAD_opt_adj"] = seg["EAD_opt"]
+            seg["PD_opt_adj"]  = seg["PD_opt"]
+
+        # Recalcular reducción con (posible) ajuste
+        seg["EL_reduccion_abs"] = seg["EL_actual"] - seg["EL_opt_adj"]
+        seg["EL_reduccion_pct"] = np.where(seg["EL_actual"]>0, seg["EL_reduccion_abs"]/seg["EL_actual"], np.nan)
+
+        # Tabla mostrable (formato)
+        seg_disp = seg[[
+            "segmento","PD_actual","PD_opt_adj","EAD_actual","EAD_opt_adj","EL_actual","EL_opt_adj","EL_reduccion_abs","EL_reduccion_pct","n_clientes"
+        ]].rename(columns={"PD_opt_adj":"PD_opt","EAD_opt_adj":"EAD_opt","EL_opt_adj":"EL_opt"})
 
         # Moneda sin decimales
         for col in ["EAD_actual","EAD_opt","EL_actual","EL_opt","EL_reduccion_abs"]:
-            if col in seg_disp.columns:
-                seg_disp[col] = seg_disp[col].apply(lambda v: fmt_money(conv_amt(v), moneda))
+            seg_disp[col] = seg_disp[col].apply(lambda v: fmt_money(conv_amt(v), moneda))
         # Porcentajes con 2 decimales
         for col in ["PD_actual","PD_opt","EL_reduccion_pct"]:
-            if col in seg_disp.columns:
-                seg_disp[col] = seg_disp[col].apply(lambda v: fmt_pct(v, 2))
-        # Conteos/enteros con dos decimales (según tu regla global)
-        if "n_clientes" in seg_disp.columns:
-            seg_disp["n_clientes"] = seg_disp["n_clientes"].apply(lambda v: fmt_num(v, 2))
+            seg_disp[col] = seg_disp[col].apply(lambda v: fmt_pct(v, 2))
+        # Conteo
+        seg_disp["n_clientes"] = seg_disp["n_clientes"].apply(lambda v: fmt_num(v, 2))
 
         st.subheader("Comparación por segmento")
         st.dataframe(seg_disp, use_container_width=True)
 
-        # Panel explicativo de segmentos (catálogo detectado + guía)
+        # Panel: nombre del segmento → significado (editable)
         with st.expander("¿Qué significa cada segmento?"):
-            seg_names = sorted(seg["segmento"].dropna().unique().tolist()) if "segmento" in seg.columns else []
-            if seg_names:
-                st.markdown("*Segmentos detectados en este escenario:*")
-                st.write(", ".join(seg_names))
-            st.markdown("""
-- Ejemplos de segmentación típica (puede variar por banco/país):
-  - *ALTO INGRESO*: mayor ingreso, menor riesgo.
-  - *MEDIO INGRESO*: base masiva, riesgo medio.
-  - *BAJO INGRESO*: mayor sensibilidad a tasas y mayor PD.
-  - *PYME / EMPRENDEDOR*: flujos variables, necesita límites/tasas diferenciadas.
-  - *NUEVO*: poca historia crediticia → PD más incierto.
-""")
+            st.markdown("*Catálogo de segmentos (nombre → significado):*")
+            # Mapa editable rápido (puedes moverlo a config)
+            seg_map = {
+                "ALTO INGRESO": "Clientes con mayor ingreso y menor riesgo.",
+                "MEDIO INGRESO": "Base masiva, riesgo medio; sensibilidad a tasa.",
+                "BAJO INGRESO": "Mayor PD; requiere límites prudentes.",
+                "PYME": "Flujos variables; límites/tasas diferenciadas.",
+                "EMPRENDEDOR": "Ingresos volátiles; histórico corto.",
+                "NUEVO": "Poca historia crediticia; PD incierto.",
+                "MASS": "Segmento masivo; heterogéneo, requiere microsegmentación.",
+            }
+            # Mostrar solo los detectados:
+            detected = seg_raw["segmento"].dropna().unique().tolist() if "segmento" in seg_raw.columns else []
+            if detected:
+                for name in sorted(detected):
+                    meaning = seg_map.get(name, "Definición pendiente (ajustar con el banco).")
+                    st.markdown(f"- *{name}* → {meaning}")
+            else:
+                st.info("No se detectaron segmentos; revisa el archivo de entrada.")
 
-        # ---------- Gráfico Top 15 por reducción de EL (mejorado) ----------
-        try:
-            seg_plot = seg.sort_values("EL_reduccion_abs", ascending=False).head(15).copy()
-            seg_plot["EL_reduccion_abs_disp"] = seg_plot["EL_reduccion_abs"].apply(lambda v: conv_amt(v))
+        # ========== (4) GRÁFICA: Segmentos por Reducción de EL ==========
+        seg_plot = seg.sort_values("EL_reduccion_abs", ascending=False).copy()
+        seg_plot["EL_reduccion_abs_disp"] = seg_plot["EL_reduccion_abs"].apply(lambda v: conv_amt(v))
 
-            fig_seg = px.bar(
-                seg_plot,
-                y="segmento", x="EL_reduccion_abs_disp",
-                orientation="h",
-                title=f"Top 15 Segmentos por Reducción de EL ({moneda})",
-                text="EL_reduccion_abs_disp"
-            )
-            fig_seg.update_traces(
-                texttemplate='%{text:,.0f}',
-                textposition='outside',
-                hovertemplate=f"Segmento: %{{y}}<br>Reducción EL: %{{x:,.0f}} {moneda}<extra></extra>"
-            )
-            fig_seg.update_layout(
-                yaxis=dict(categoryorder='total ascending'),
-                margin=dict(l=20,r=20,t=60,b=20),
-                xaxis_title=f"Reducción EL ({moneda})", yaxis_title="Segmento"
-            )
-            st.plotly_chart(fig_seg, use_container_width=True)
+        fig_seg = px.bar(
+            seg_plot,
+            y="segmento", x="EL_reduccion_abs_disp",
+            orientation="h",
+            title=f"Segmentos por Reducción de EL ({moneda})",
+            text="EL_reduccion_abs_disp"
+        )
+        fig_seg.update_traces(
+            texttemplate='%{text:,.0f}',
+            textposition='outside',
+            hovertemplate=f"Segmento: %{{y}}<br>Reducción EL: %{{x:,.0f}} {moneda}<extra></extra>"
+        )
+        fig_seg.update_layout(
+            yaxis=dict(categoryorder='total ascending'),
+            margin=dict(l=20,r=20,t=60,b=20),
+            xaxis_title=f"Reducción EL ({moneda})", yaxis_title="Segmento"
+        )
+        st.plotly_chart(fig_seg, use_container_width=True)
 
-            with st.expander("¿Qué muestra esta gráfica?"):
-                st.markdown(f"""
+        with st.expander("¿Qué muestra esta gráfica?"):
+            st.markdown(f"""
 Ordena los *segmentos* por la *reducción absoluta* de la *Pérdida Esperada (EL)* al aplicar nuestro modelo, en *{moneda}*.
-
-- *Barras más largas* ⇒ mayor ahorro de EL en ese segmento.
-- Sirve para *priorizar* dónde enfocar las palancas (límites/tasas/incentivos).
-- Segmentos con gran reducción de EL son candidatos a *ampliar EAD* sin elevar pérdida.
+- Barras más largas ⇒ mayor ahorro de EL en ese segmento.
+- Sirve para *priorizar* dónde enfocar límites/tasas/incentivos.
+- Con el *guardarraíl* activo, ningún segmento queda peor que el baseline.
 """)
-        except Exception as e:
-            st.warning(f"No se pudo construir el Top 15 de segmentos: {e}")
     else:
-        st.info("No se encontró default_compare_segment.csv; se omitirá la tabla/gráfico por segmento.")
+        st.info("No se encontró default_compare_segment.csv; se omite la sección por segmento.")
 
-    # ---------- Detalle por cliente ----------
-    det = pd.read_csv(detl_path)
+    # ========== (5) DETALLE POR CLIENTE + glosario de encabezados ==========
+    det = pd.read_csv(detl_path).copy()
+    if "segmento" in det.columns:
+        det["segmento"] = det["segmento"].astype(str).str.upper()
+
     det_view = det.copy()
-
-    # % con 2 decimales
     for col in ["pd_baseline","pd_opt"]:
         if col in det_view.columns:
             det_view[col] = det_view[col].apply(lambda v: fmt_pct(v, 2))
-    # Moneda sin decimales
     for col in ["ead_baseline","ead_opt","EL_baseline","EL_opt"]:
         if col in det_view.columns:
             det_view[col] = det_view[col].apply(lambda v: fmt_money(conv_amt(v), moneda))
-    # Segmento en mayúscula en la vista
-    if "segmento" in det_view.columns:
-        det_view["segmento"] = det_view["segmento"].astype(str).str.upper()
 
     st.subheader("Detalle por cliente (muestra)")
     st.dataframe(det_view.head(50), use_container_width=True)
@@ -459,17 +479,31 @@ Ordena los *segmentos* por la *reducción absoluta* de la *Pérdida Esperada (EL
         mime="text/csv",
     )
 
-    # ---------- Panel: ¿Por qué nuestro método es mejor? (siglas explicadas) ----------
+    with st.expander("Glosario de columnas (fila 1 del cuadro)"):
+        st.markdown(f"""
+- *id_cliente*: identificador único del cliente.
+- *segmento*: grupo del cliente (en MAYÚSCULA).
+- *region*: zona geográfica.
+- *pd_baseline (Probability of Default): PD del **método actual* (promedio por segmento).
+- *pd_opt (Probability of Default): PD de **nuestro modelo* (por cliente).
+- *lgd_baseline (Loss Given Default): % de pérdida si incumple (método actual*).
+- *lgd_opt (Loss Given Default): % de pérdida si incumple (nuestro modelo*).
+- *ead_baseline (Exposure at Default): exposición al default en el **método actual* (*{moneda}*).
+- *ead_opt (Exposure at Default): exposición al default en **nuestro modelo* (*{moneda}*).
+- *EL_baseline (Expected Loss): PD×LGD×EAD en **método actual* (*{moneda}*).
+- *EL_opt (Expected Loss): PD×LGD×EAD en **nuestro modelo* (*{moneda}*).
+        """)
+
+    # Panel final de narrativa ejecutiva
     with st.expander("¿Por qué nuestro método es mejor que el actual?"):
         st.markdown("""
 *Método actual (scorecards por promedio de segmento):*
-- *PD (Probability of Default)* y *LGD (Loss Given Default)* se aproximan con promedios → menor precisión.
-- Puede *sobre-provisionar* a clientes de bajo riesgo y *sub-provisionar* a clientes de alto riesgo.
+- *PD (Probability of Default)* y *LGD (Loss Given Default)* por promedios ⇒ menor precisión.
+- Riesgo de *sobre- o sub-provisionar* segmentos masivos.
 
 *Nuestro método (ML por cliente):*
-- Estima *PD (Probability of Default), **LGD (Loss Given Default)* y *EAD (Exposure at Default)* *cliente a cliente*.
-- Reasigna *EAD* hacia clientes con menor *PD×LGD, reduciendo **EL (Expected Loss)* sin sacrificar ingresos.
-- Mejora *ROE (Return on Equity)* y reduce presión de *RWA (Risk-Weighted Assets)* y provisiones.
-
-> Traducción a resultados: *menos pérdidas por impago* ⇒ *mayor rentabilidad* ⇒ *mejor bono anual*.
+- Estima *PD, **LGD* y *EAD (Exposure at Default)* cliente a cliente.
+- Reasigna *EAD* hacia perfiles sanos (menor *PD×LGD), bajando **EL (Expected Loss)* total.
+- *Guardarraíl* opcional: ningún segmento queda con *EL* peor que el baseline.
+- Mejora *ROE (Return on Equity)* y alinea con *RWA (Risk-Weighted Assets)* y provisiones.
 """)

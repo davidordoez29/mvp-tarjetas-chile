@@ -232,3 +232,151 @@ csv_bytes = download_df.to_csv(index=False).encode("utf-8")
 st.download_button("Descargar CSV de la vista", data=csv_bytes, file_name=f"vista_{escen}_{mode}.csv", mime="text/csv")
 
 st.caption(f"Fuente: consolidado_piso3_{escen}_{mode}.csv · Moneda: {moneda} (sin decimales) · % con 2 decimales · USDCLP={fx:.0f}")
+# =========================
+# ARISTA 1 — Default / Impago (Actual vs Optimizado)
+# =========================
+st.markdown("## Arista 1 — Default / Impago (Actual vs Optimizado)")
+
+# rutas esperadas generadas por la Celda 24-Default-Compare
+port_path = os.path.join(OUT_DIR, "default_compare_portfolio.csv")
+segm_path = os.path.join(OUT_DIR, "default_compare_segment.csv")
+detl_path = os.path.join(OUT_DIR, "default_compare_detail.csv")
+
+if not (os.path.exists(port_path) and os.path.exists(detl_path)):
+    st.info(
+        "No encontré los archivos comparativos de la Arista 1. "
+        "Corre la *Celda 24-Default-Compare* en el notebook (Piso 3) "
+        "para generar: default_compare_portfolio.csv, default_compare_segment.csv y default_compare_detail.csv."
+    )
+else:
+    # --- Carga
+    port = pd.read_csv(port_path)
+    # pivot KPIs a dict
+    kpis = {row["kpi"]: row["value"] for _, row in port.iterrows()}
+
+    # Seguridad por si faltan claves
+    PD_b = float(kpis.get("PD promedio ponderado (Actual)", float("nan")))
+    PD_o = float(kpis.get("PD promedio ponderado (Optimizado)", float("nan")))
+    EL_b = float(kpis.get("EL total (Actual)", 0.0))
+    EL_o = float(kpis.get("EL total (Optimizado)", 0.0))
+    EL_drop_abs = float(kpis.get("Reducción EL (monto)", EL_b - EL_o))
+    EL_drop_pct = float(kpis.get("Reducción EL (%)", (EL_drop_abs / EL_b) if EL_b else float("nan")))
+    EAD_b = float(kpis.get("EAD total (Actual)", 0.0))
+    EAD_o = float(kpis.get("EAD total (Optimizado)", 0.0))
+
+    # Conversión de moneda para EL/EAD según sidebar (moneda, fx)
+    def conv_amt(v):
+        return to_currency(pd.Series([v]), moneda, fx).iloc[0] if pd.notnull(v) else v
+
+    EL_b_disp   = conv_amt(EL_b)
+    EL_o_disp   = conv_amt(EL_o)
+    EL_drop_disp= conv_amt(EL_drop_abs)
+    EAD_b_disp  = conv_amt(EAD_b)
+    EAD_o_disp  = conv_amt(EAD_o)
+
+    # --- KPIs comparativos (2 columnas: Actual vs Optimizado)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("PD prom. (Actual)",    fmt_pct(PD_b, 2))
+    c2.metric("PD prom. (Optimizado)",fmt_pct(PD_o, 2))
+    c3.metric(f"EL total (Actual)",   fmt_money(EL_b_disp, moneda))
+    c4.metric(f"EL total (Optimizado)", fmt_money(EL_o_disp, moneda))
+    c5.metric("Reducción EL (monto)", fmt_money(EL_drop_disp, moneda))
+    c6.metric("Reducción EL (%)",     fmt_pct(EL_drop_pct, 2))
+
+    c7, c8 = st.columns(2)
+    c7.metric(f"EAD total (Actual)",     fmt_money(EAD_b_disp, moneda))
+    c8.metric(f"EAD total (Optimizado)", fmt_money(EAD_o_disp, moneda))
+
+    with st.expander("¿Qué significa cada KPI?"):
+        st.markdown(f"""
+- *PD (Probability of Default):* probabilidad de impago (porcentaje, 2 decimales).
+- *EL (Expected Loss):* PD × LGD × EAD, pérdidas esperadas (*{moneda}* sin decimales).
+- *EAD (Exposure at Default):* exposición en caso de impago (*{moneda}* sin decimales).
+- *Reducción EL:* diferencia entre EL actual vs optimizado (monto y %).
+        """)
+
+    st.markdown("---")
+
+    # --- Gráfico: EL Actual vs Optimizado
+    comp_df = pd.DataFrame({
+        "Escenario": ["Actual","Optimizado"],
+        f"EL ({moneda})": [EL_b_disp, EL_o_disp]
+    })
+    fig_el = px.bar(comp_df, x="Escenario", y=f"EL ({moneda})", title="Pérdida Esperada (EL) — Actual vs Optimizado")
+    st.plotly_chart(fig_el, use_container_width=True)
+
+    # --- Tabla por segmento (si existe)
+    if os.path.exists(segm_path):
+        seg = pd.read_csv(segm_path)
+        # columnas esperadas (si faltan, se ignoran)
+        for col in ["PD_actual","PD_opt","EL_actual","EL_opt","EL_reduccion_abs","EL_reduccion_pct","EAD_actual","EAD_opt","n_clientes"]:
+            if col not in seg.columns:
+                seg[col] = np.nan
+
+        # Preparar tabla mostrable con formato:
+        seg_disp = seg.copy()
+        # Moneda sin decimales
+        for col in ["EAD_actual","EAD_opt","EL_actual","EL_opt","EL_reduccion_abs"]:
+            if col in seg_disp.columns:
+                seg_disp[col] = seg_disp[col].apply(lambda v: fmt_money(conv_amt(v), moneda))
+        # Porcentajes con 2 decimales
+        for col in ["PD_actual","PD_opt","EL_reduccion_pct"]:
+            if col in seg_disp.columns:
+                seg_disp[col] = seg_disp[col].apply(lambda v: fmt_pct(v, 2))
+        # Enteros/Conteos con 2 decimales (según regla general acordada)
+        if "n_clientes" in seg_disp.columns:
+            seg_disp["n_clientes"] = seg_disp["n_clientes"].apply(lambda v: fmt_num(v, 2))
+
+        st.subheader("Comparación por segmento")
+        st.dataframe(seg_disp, use_container_width=True)
+
+        # Gráfico: reducción absoluta de EL por segmento (Top 15)
+        try:
+            seg_plot = seg.sort_values("EL_reduccion_abs", ascending=False).head(15)
+            seg_plot["EL_reduccion_abs_disp"] = seg_plot["EL_reduccion_abs"].apply(lambda v: conv_amt(v))
+            fig_seg = px.bar(seg_plot, x="segmento", y="EL_reduccion_abs_disp",
+                             title=f"Top 15 segmentos por reducción de EL ({moneda})")
+            st.plotly_chart(fig_seg, use_container_width=True)
+        except Exception:
+            pass
+    else:
+        st.info("No se encontró default_compare_segment.csv; se omitirá la tabla/gráfico por segmento.")
+
+    # --- Detalle por cliente + descarga
+    det = pd.read_csv(detl_path)
+    # armamos una vista pequeña y formateada
+    det_view = det.copy()
+    # % con 2 decimales
+    for col in ["pd_baseline","pd_opt"]:
+        if col in det_view.columns:
+            det_view[col] = det_view[col].apply(lambda v: fmt_pct(v, 2))
+    # moneda sin decimales
+    for col in ["ead_baseline","ead_opt","EL_baseline","EL_opt"]:
+        if col in det_view.columns:
+            det_view[col] = det_view[col].apply(lambda v: fmt_money(conv_amt(v), moneda))
+
+    st.subheader("Detalle por cliente (muestra)")
+    st.dataframe(det_view.head(50), use_container_width=True)
+
+    # descarga
+    st.download_button(
+        "Descargar detalle completo (CSV)",
+        data=det.to_csv(index=False).encode("utf-8"),
+        file_name="default_compare_detail.csv",
+        mime="text/csv",
+    )
+
+    # --- Bloque explicativo (para el director)
+    with st.expander("¿Por qué nuestro método es mejor que el actual?"):
+        st.markdown("""
+*Método actual (scorecards por promedio de segmento):*
+- PD y LGD se aproximan con promedios → menos precisión.
+- Puede sobre-provisionar clientes de bajo riesgo y sub-provisionar los de alto riesgo.
+
+*Nuestro método (ML por cliente):*
+- PD/LGD/EAD se estiman *cliente a cliente* con más precisión.
+- Reduce *EL* sin sacrificar ingresos (mejor asignación de límites y tasas).
+- Resultado: *más utilidad, **menor provisión* y *mejor ROE*.
+
+> Traducción a resultados: menos pérdidas por impago ⇒ mayor rentabilidad ⇒ *mejor bono anual*.
+        """)

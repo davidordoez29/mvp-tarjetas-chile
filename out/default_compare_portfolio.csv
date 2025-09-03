@@ -1,9 +1,9 @@
 kpi,value
-PD promedio ponderado (Actual),0.4619599331857172
-PD promedio ponderado (Optimizado),0.12000000000066774
-EL total (Actual),361923137.78958344
-EL total (Optimizado),265877449.61516306
-Reducción EL (monto),96045688.17442039
-Reducción EL (%),0.26537592694684214
-EAD total (Actual),2363602025.7929306
-EAD total (Optimizado),6672585089.2
+PD promedio ponderado (Actual),0.3512241647031836
+PD promedio ponderado (Optimizado),0.14288756982954293
+EL total (Actual),2755503034.581898
+EL total (Optimizado),2224343284.2988267
+Reducción EL (monto),531159750.2830715
+Reducción EL (%),0.19276326086995807
+EAD total (Actual),23823721901.049995
+EAD total (Optimizado),47185340186.5

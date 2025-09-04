@@ -1,0 +1,23 @@
+{
+  "required": [
+    "id_cliente",
+    "segmento",
+    "region",
+    "pd_score",
+    "lgd_pred",
+    "ead_pred",
+    "apr_base",
+    "apr_efectiva",
+    "costos_operativos",
+    "limite_ref",
+    "pd_baseline",
+    "lgd_baseline",
+    "ead_baseline",
+    "EL_baseline"
+  ],
+  "optional": [
+    "ingreso_mensual",
+    "e_opt_seed",
+    "r_opt_seed"
+  ]
+}

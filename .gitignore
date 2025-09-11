@@ -223,3 +223,12 @@ mvp_outputs/
 *.feather
 *.ipynb_checkpoints/
 pycache/
+
+# Salidas y temporales
+out/
+mvp_outputs/
+*.zip
+*.parquet
+*.feather
+*.ipynb_checkpoints/
+pycache/

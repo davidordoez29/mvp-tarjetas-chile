@@ -205,3 +205,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Salidas y temporales
+out/
+mvp_outputs/
+*.zip
+*.parquet
+*.feather
+*.ipynb_checkpoints/
+_pycache_/

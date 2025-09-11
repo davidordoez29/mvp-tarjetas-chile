@@ -388,3 +388,173 @@ st.markdown("""
 - Ajusta *APR* (pricing) dentro de bandas y con restricciones de negocio.  
 - Mide impacto en *Utilidad, **EL, **PD ponderada* y capital/provisiones.  
 """)
+# =========================
+# Sección: Incentivos – Diagnóstico
+# (Pegar al final de app_dashboard.py)
+# =========================
+import os
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+st.markdown("---")
+st.header("🎯 Incentivos – Diagnóstico")
+
+# ---- Helpers
+def _out_dir():
+    # Usa OUT_DIR estándar del proyecto
+    # Si quieres, puedes hacerlo configurable por st.secrets o un input
+    return os.environ.get("OUT_DIR", "/content/mvp-tarjetas-chile/out")
+
+def _safe_read(path):
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return None
+
+def _nz(s, lo=None, hi=None, fill=0.0):
+    s2 = pd.to_numeric(s, errors="coerce").fillna(fill)
+    if lo is not None or hi is not None:
+        s2 = s2.clip(lower=lo, upper=hi)
+    return s2
+
+def _recompute_sensitivity(master, detail, cap, grid_n=11):
+    """
+    Replica el modelo simple de la Celda 11 para recalcular sensibilidades
+    con un cap dado, sin re-ejecutar el notebook.
+    """
+    # Sanitizar mínimos necesarios
+    need_m = ["id_cliente","segmento","ead_baseline","e_min","e_max",
+              "apr_efectiva","pd_score","lgd_pred","costo_tasa","costos_operativos_tasa","elasticidad_ingreso"]
+    for c in need_m:
+        if c not in master.columns:
+            raise KeyError(f"Falta '{c}' en master_piso3.csv")
+
+    master = master.copy()
+    for c in ["ead_baseline","e_min","e_max","apr_efectiva","pd_score","lgd_pred",
+              "costo_tasa","costos_operativos_tasa","elasticidad_ingreso"]:
+        master[c] = _nz(master[c], lo=0.0)
+
+    if detail is None or detail.empty:
+        # construimos un detail mínimo con r_opt = apr_efectiva (si no existe)
+        detail = master[["id_cliente","segmento"]].copy()
+        detail["r_opt"] = master["apr_efectiva"]
+    else:
+        if "r_opt" not in detail.columns or detail["r_opt"].isna().all():
+            detail["r_opt"] = master["apr_efectiva"]
+
+    df = detail.merge(
+        master[["id_cliente","segmento","ead_baseline","e_min","e_max",
+                "apr_efectiva","pd_score","lgd_pred","costo_tasa","costos_operativos_tasa","elasticidad_ingreso"]],
+        on="id_cliente", how="left"
+    )
+    df["tau"] = (df["pd_score"] * df["lgd_pred"]).clip(0.0, 1.0)
+
+    rows = []
+    for seg_name, g in df.groupby("segmento"):
+        grid = np.linspace(0.0, cap, int(grid_n))
+        best_util = -1e30
+        best_inc  = 0.0
+        best_row  = None
+        for inc in grid:
+            rel = inc
+            e_hat = (g["ead_baseline"] * (1.0 + g["elasticidad_ingreso"] * rel)).clip(lower=g["e_min"], upper=g["e_max"])
+            ingreso = (g["r_opt"] * e_hat).sum()
+            el      = (g["tau"] * e_hat).sum()
+            cfin    = (g["costo_tasa"] * e_hat).sum()
+            cop     = (g["costos_operativos_tasa"] * e_hat).sum()
+            c_inc   = (inc * g["ead_baseline"]).sum()
+            util    = ingreso - el - (cfin + cop) - c_inc
+            if util > best_util:
+                best_util = util
+                best_inc  = float(inc)
+                best_row  = {
+                    "segmento": seg_name,
+                    "cap_inc": cap,
+                    "inc_elegido": best_inc,
+                    "Utilidad_model": float(util),
+                    "Ingreso_model": float(ingreso),
+                    "EL_model": float(el),
+                    "CostFin_model": float(cfin),
+                    "CostOp_model": float(cop),
+                    "Costo_incentivo": float(c_inc),
+                    "EAD_model": float(e_hat.sum()),
+                }
+        if best_row is not None:
+            rows.append(best_row)
+
+    sens = pd.DataFrame(rows).sort_values(["segmento","cap_inc"])
+    if not sens.empty:
+        sens["inc_rel_cap_%"] = np.where(sens["cap_inc"]>0, sens["inc_elegido"]/sens["cap_inc"]*100.0, np.nan)
+    return sens
+
+# ---- Carga de archivos
+OUT_DIR = _out_dir()
+p_master = os.path.join(OUT_DIR, "master_piso3.csv")
+p_detail = os.path.join(OUT_DIR, "incentives_detail.csv")
+p_diag   = os.path.join(OUT_DIR, "incentives_diag_summary.csv")
+p_sens   = os.path.join(OUT_DIR, "incentives_sensitivity.csv")
+
+master = _safe_read(p_master)
+detail = _safe_read(p_detail)
+diag   = _safe_read(p_diag)
+sens   = _safe_read(p_sens)
+
+col1, col2, col3 = st.columns([1,1,1])
+with col1:
+    st.caption(f"📂 OUT_DIR: {OUT_DIR}")
+with col2:
+    st.caption("master_piso3.csv ✅" if master is not None else "master_piso3.csv ❌")
+with col3:
+    st.caption("incentives_detail.csv ✅" if detail is not None else "incentives_detail.csv ❌")
+
+# ---- Panel A: Diagnóstico (por segmento)
+st.subheader("A) Diagnóstico por segmento (¿por qué INC=0?)")
+if diag is not None and not diag.empty:
+    # Orden por % INC=0 descendente
+    diag_view = diag.copy()
+    if "pct_inc_cero" in diag_view.columns:
+        diag_view = diag_view.sort_values("pct_inc_cero", ascending=False)
+    st.dataframe(diag_view, use_container_width=True)
+else:
+    st.info("No encontré incentives_diag_summary.csv. Genera con la Celda 11 o usa el Panel B para recalcular sensibilidades en vivo.")
+
+# ---- Panel B: Sensibilidades en vivo
+st.subheader("B) Sensibilidades (recalcular en vivo)")
+cap_col, pts_col, act_col = st.columns([1,1,1])
+with cap_col:
+    cap_ui = st.slider("Tope incentivo (cap)", 0.001, 0.025, 0.010, 0.001, format="%.3f")  # 0.1% a 2.5%
+with pts_col:
+    grid_n = st.select_slider("Resolución (puntos)", options=[5,7,9,11,13,15,21], value=11)
+with act_col:
+    do_recalc = st.button("Recalcular sensibilidad")
+
+if do_recalc:
+    if master is None:
+        st.error("Falta master_piso3.csv")
+    else:
+        with st.spinner("Calculando…"):
+            sens_live = _recompute_sensitivity(master, detail, cap=cap_ui, grid_n=grid_n)
+        if sens_live is None or sens_live.empty:
+            st.warning("No se pudo calcular sensibilidad (verifica columnas mínimas).")
+        else:
+            st.success("Sensibilidad recalculada")
+            st.dataframe(sens_live, use_container_width=True)
+            # KPIs rápidos
+            k1, k2, k3 = st.columns(3)
+            try:
+                top_seg = sens_live.sort_values("Utilidad_model", ascending=False).iloc[0]
+                with k1: st.metric("Mejor segmento (utilidad)", str(top_seg["segmento"]))
+                with k2: st.metric("Utilidad máxima (escenario)", f"{top_seg['Utilidad_model']:,.0f}")
+                with k3: st.metric("INC elegido / cap (%)", f"{top_seg['inc_rel_cap_%']:,.1f}%")
+            except Exception:
+                pass
+else:
+    # Mostrar sensibilidad precomputada si existe
+    st.caption("Sensibilidad precomputada (Celda 11):")
+    if sens is not None and not sens.empty:
+        st.dataframe(sens.sort_values(["segmento","cap_inc"]), use_container_width=True)
+    else:
+        st.info("No encontré incentives_sensitivity.csv. Puedes recalcular arriba con el botón.")
+
+st.caption("Notas: el modelo de sensibilidad mantiene r_opt fijo y varía el tope de incentivo (cap). EAD se ajusta por elasticidad y se clippea por bandas e_min/e_max.")

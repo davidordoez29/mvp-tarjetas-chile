@@ -1,19 +1,36 @@
 # app/app_dashboard.py
-import os
-import json
+import os, json
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# =========================
-# CONFIG & CONSTANTS
-# =========================
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
-# Carpeta del bundle con los CSV exactos que indicaste
-DEFAULT_BUNDLE_DIR = os.environ.get("BUNDLE_DIR", "").strip() or "out/dashboard_bundle"
+# =========================
+# AUTODETECCIÓN DEL BUNDLE
+# =========================
+ENV_BUNDLE = os.environ.get("BUNDLE_DIR", "").strip()
+CANDIDATE_DIRS = [
+    ENV_BUNDLE,
+    "out/dashboard_bundle",
+    "./out/dashboard_bundle",
+    "../out/dashboard_bundle",
+    "/content/mvp-tarjetas-chile/out/dashboard_bundle",
+    "/content/out/dashboard_bundle",
+    "/workspace/mvp-tarjetas-chile/out/dashboard_bundle",
+    os.path.join(os.getcwd(), "out/dashboard_bundle"),
+]
 
-BUNDLE_FILES = [
+def first_existing_path(paths):
+    for p in [x for x in paths if x]:
+        if os.path.isdir(p):
+            return p
+    return None
+
+bundle_dir = first_existing_path(CANDIDATE_DIRS) or "out/dashboard_bundle"  # fallback
+
+# ====== ARCHIVOS EXACTOS DEL BUNDLE (según tu lista) ======
+REQUIRED_FILES = [
     "bundle_health_report.csv",
     "bundle_health_report.json",
     "bundle_meta.json",
@@ -35,7 +52,7 @@ BUNDLE_FILES = [
 ]
 
 # =========================
-# HELPERS (formato & carga)
+# HELPERS
 # =========================
 @st.cache_data
 def load_csv(path):
@@ -68,7 +85,6 @@ def fmt_money(x, moneda="CLP", usdclp=900.0):
         sym = "USD"
     else:
         sym = "CLP"
-    # miles con punto, decimales con coma
     return f"{sym} {v:,.2f}".replace(",", "").replace(".", ",").replace("", ".")
 
 def fmt_pct(x):
@@ -76,7 +92,6 @@ def fmt_pct(x):
         v = float(x)
     except:
         return "-"
-    # si viene 0.12 => 12.00%
     if v <= 1.0:
         v = v * 100.0
     return f"{v:,.2f}%".replace(",", "").replace(".", ",").replace("", ".")
@@ -85,12 +100,10 @@ def kpi_row(title, v_actual, v_opt, moneda, usdclp, help_txt=None):
     var_pct = None
     if v_actual is not None and v_opt is not None:
         try:
-            base = float(v_actual)
-            new  = float(v_opt)
+            base = float(v_actual); new = float(v_opt)
             var_pct = ((new - base) / base * 100.0) if base != 0 else np.nan
         except:
             var_pct = np.nan
-
     c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
     with c1:
         st.metric(f"{title} (Actual)", fmt_money(v_actual, moneda, usdclp), help=help_txt)
@@ -104,41 +117,46 @@ def show_table_formatted(df, moneda, usdclp, caption=""):
         st.info("Sin datos para mostrar.")
         return
     d = df.copy()
-
-    # Heurística: columnas de porcentaje por nombre
-    pct_keys = ["tasa", "rate", "apr", "pd", "lgd", "pct", "porc", "r_opt", "pdw"]
+    pct_keys = ["tasa", "rate", "apr", "pd", "lgd", "pct", "porc", "r_opt", "pdw", "roi"]
     def is_pct_col(name):
         n = str(name).lower()
         return any(k in n for k in pct_keys)
-
     for col in d.columns:
         if pd.api.types.is_numeric_dtype(d[col]):
             if is_pct_col(col):
                 d[col] = d[col].apply(fmt_pct)
             else:
                 d[col] = d[col].apply(lambda x: fmt_money(x, moneda, usdclp))
-
     st.dataframe(d, use_container_width=True)
     if caption:
         st.caption(caption)
 
 # =========================
-# SIDEBAR – Control de moneda y bundle
+# SIDEBAR
 # =========================
 with st.sidebar:
     st.header("⚙️ Configuración")
-    bundle_dir = st.text_input("Carpeta de datos (bundle)", DEFAULT_BUNDLE_DIR)
+    st.write("*Rutas probadas (orden):*")
+    st.code("\n".join([p or "<vacía>" for p in CANDIDATE_DIRS]), language="bash")
+    bundle_dir = st.text_input("Carpeta de datos (bundle)", bundle_dir)
     moneda = st.radio("Moneda", ["CLP", "USD"], horizontal=True, index=0)
     usdclp = st.number_input("USD↔CLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0)
-    st.caption("Todos los montos se convierten según esta tasa.")
+    # Explorador del bundle
+    if os.path.isdir(bundle_dir):
+        files_in_dir = sorted(os.listdir(bundle_dir))
+        st.success(f"Bundle detectado: {bundle_dir}")
+        st.caption("Archivos presentes:")
+        st.code("\n".join(files_in_dir) if files_in_dir else "(vacío)")
+    else:
+        st.error(f"No existe la carpeta: {bundle_dir}")
 
-    # Verificación rápida de nombres exactos
-    missing = [f for f in BUNDLE_FILES if not os.path.exists(os.path.join(bundle_dir, f))]
+    # Chequeo de faltantes por nombre exacto
+    missing = [f for f in REQUIRED_FILES if not os.path.exists(os.path.join(bundle_dir, f))]
     if missing:
-        st.warning("Archivos faltantes (por nombre exacto):\n- " + "\n- ".join(missing))
+        st.warning("Faltantes (nombre exacto):\n- " + "\n- ".join(missing))
 
 # =========================
-# CARGA DE ARCHIVOS (nombres EXACTOS)
+# CARGA (usando NOMBRES EXACTOS)
 # =========================
 # Default
 def_port = load_csv(os.path.join(bundle_dir, "default_portfolio.csv"))
@@ -161,12 +179,10 @@ cap_port = load_csv(os.path.join(bundle_dir, "capital_portfolio.csv"))
 cap_seg  = load_csv(os.path.join(bundle_dir, "capital_segment.csv"))
 cap_det  = load_csv(os.path.join(bundle_dir, "capital_detail.csv"))
 
-# Metadatos / definiciones
+# Meta y health
 kpi_defs = load_json(os.path.join(bundle_dir, "kpi_defs.json"))
 seg_defs = load_json(os.path.join(bundle_dir, "segment_defs.json"))
 meta     = load_json(os.path.join(bundle_dir, "bundle_meta.json"))
-
-# Health report (opcional)
 health_csv  = load_csv(os.path.join(bundle_dir, "bundle_health_report.csv"))
 health_json = load_json(os.path.join(bundle_dir, "bundle_health_report.json"))
 
@@ -174,8 +190,7 @@ health_json = load_json(os.path.join(bundle_dir, "bundle_health_report.json"))
 # HEADER
 # =========================
 st.title("📊 MVP Bancario – Optimización en 4 Aristas")
-st.caption("Motor de decisión que integra Riesgo (Default), Yield/Pricing, Incentivos y Capital/Provisiones. "
-           "Comparación baseline vs optimizado, con reglas y métricas auditables.")
+st.caption("Riesgo (Default), Yield/Pricing, Incentivos y Capital/Provisiones. Baseline vs optimizado, con reglas auditables.")
 
 # =========================
 # TABS
@@ -193,12 +208,11 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # -------------------------
 with tab1:
     st.subheader("Arista 1 — Default / Impago")
-    st.write("Modelos PD/LGD/EAD → Expected Loss (EL). Comparamos portafolio actual vs optimizado.")
+    st.write("PD·LGD·EAD → Expected Loss. Comparamos actual vs optimizado.")
 
     if def_port is None:
         st.error("Falta default_portfolio.csv")
     else:
-        # Columnas esperadas (crea si faltan)
         for c in [
             "EAD_actual","EAD_optimizado",
             "EL_actual","EL_optimizado",
@@ -209,7 +223,7 @@ with tab1:
             if c not in def_port.columns:
                 def_port[c] = 0.0
 
-        st.markdown("*KPIs del Portafolio (Actual vs Optimizado)*")
+        st.markdown("*KPIs del Portafolio*")
         kpi_row("EAD total", def_port["EAD_actual"].sum(), def_port["EAD_optimizado"].sum(), moneda, usdclp)
         kpi_row("Expected Loss", def_port["EL_actual"].sum(), def_port["EL_optimizado"].sum(), moneda, usdclp)
         kpi_row("Ingreso Financiero", def_port["Ingreso_actual"].sum(), def_port["Ingreso_optimizado"].sum(), moneda, usdclp)
@@ -226,7 +240,7 @@ with tab1:
 # -------------------------
 with tab2:
     st.subheader("Arista 2 — Yield / Pricing")
-    st.write("Comparamos ingreso/utilidad total y efecto aislado de pricing. Curvas por segmento con bandas de r.")
+    st.write("Efecto total y efecto aislado de pricing. Curvas por segmento.")
 
     if y_port is None:
         st.error("Falta yield_portfolio.csv")
@@ -242,7 +256,7 @@ with tab2:
         kpi_row("Utilidad (Solo Pricing)", y_port["utilidad_base"].sum(), y_port["utilidad_iso"].sum(), moneda, usdclp)
 
         st.markdown("*Curvas por segmento*")
-        show_table_formatted(y_curv, moneda, usdclp, "Sensibilidad de r dentro de bandas")
+        show_table_formatted(y_curv, moneda, usdclp, "Sensibilidad dentro de bandas")
         with st.expander("Detalle por cliente (muestra)"):
             show_table_formatted(y_det.head(200) if y_det is not None else y_det, moneda, usdclp)
 
@@ -251,14 +265,12 @@ with tab2:
 # -------------------------
 with tab3:
     st.subheader("Arista 3 — Incentivos")
-    st.write("Asignación de beneficios con ROI positivo, midiendo costo e incremental real.")
+    st.write("Costo de incentivos vs incremental (ingreso/utilidad). ROI = incremental / costo.")
 
     if inc_det is None:
         st.error("Falta incentives_detail.csv")
     else:
         d = inc_det.copy()
-
-        # Intentar convertir numéricos sin romper IDs
         for col in d.columns:
             if pd.api.types.is_object_dtype(d[col]):
                 try:
@@ -266,7 +278,7 @@ with tab3:
                 except:
                     pass
 
-        # --- COSTO en MONTO ---
+        # Costo (monto)
         cost_amount_col = next((c for c in [
             "inc_cost","costo_incentivo","costo_incentivo_total","costo_beneficios","costo_incentivos"
         ] if c in d.columns), None)
@@ -279,17 +291,13 @@ with tab3:
                 d["_inc_cost_"] = pd.to_numeric(d[rate_col], errors="coerce").fillna(0.0) * \
                                     pd.to_numeric(d[ead_col],  errors="coerce").fillna(0.0)
                 cost_amount_col = "_inc_cost_"
-
         total_cost = pd.to_numeric(d.get(cost_amount_col, 0), errors="coerce").fillna(0.0).sum()
 
-        # --- INCREMENTAL (monto) ---
+        # Incremental
         uplift_col = next((c for c in [
-            "delta_util_total","utilidad_incremental","utilidad_uplift","uplift_utilidad"
+            "delta_util_total","utilidad_incremental","utilidad_uplift","uplift_utilidad",
+            "uplift_ingreso","ingreso_incremental","delta_ingreso_total","delta_ingreso","ingreso_uplift"
         ] if c in d.columns), None)
-        if uplift_col is None:
-            uplift_col = next((c for c in [
-                "uplift_ingreso","ingreso_incremental","delta_ingreso_total","delta_ingreso","ingreso_uplift"
-            ] if c in d.columns), None)
         if uplift_col is None:
             if "utilidad_opt" in d.columns and "utilidad_base" in d.columns:
                 d["_uplift_"] = pd.to_numeric(d["utilidad_opt"], errors="coerce").fillna(0.0) - \
@@ -299,7 +307,6 @@ with tab3:
                 d["_uplift_"] = pd.to_numeric(d["ingreso_opt"], errors="coerce").fillna(0.0) - \
                                   pd.to_numeric(d["ingreso_base"], errors="coerce").fillna(0.0)
                 uplift_col = "_uplift_"
-
         uplift_val = pd.to_numeric(d.get(uplift_col, 0), errors="coerce").fillna(0.0).sum()
         roi = (uplift_val / total_cost) if (total_cost and total_cost != 0) else np.nan
 
@@ -319,8 +326,7 @@ with tab3:
 # -------------------------
 with tab4:
     st.subheader("Arista 4 — Capital / Provisiones")
-    st.write("Proxies IFRS9/Basilea para capital requerido y provisiones. "
-             "Mostramos liberación/consumo al pasar de baseline a optimizado.")
+    st.write("Proxies IFRS9/Basilea: capital requerido y provisiones; liberaciones por optimización.")
 
     if cap_port is None:
         st.error("Falta capital_portfolio.csv")
@@ -350,24 +356,22 @@ with tab4:
 # -------------------------
 with tab5:
     st.subheader("Diagnóstico del Bundle")
-    st.write("Verifica la integridad y consistencia del paquete de datos usado por el dashboard.")
+    st.write("Verifica integridad y consistencia del paquete de datos.")
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("*Meta (bundle_meta.json)*")
+        st.markdown("*bundle_meta.json*")
         st.json(meta if meta else {"info": "bundle_meta.json no encontrado o vacío"})
-
-        st.markdown("*Health (bundle_health_report.json)*")
+        st.markdown("*bundle_health_report.json*")
         st.json(health_json if health_json else {"info": "bundle_health_report.json no encontrado o vacío"})
 
     with c2:
-        st.markdown("*Health (bundle_health_report.csv)*")
-        show_table_formatted(health_csv, moneda, usdclp, "Si existe, muestra chequeos de sanidad")
+        st.markdown("*bundle_health_report.csv*")
+        show_table_formatted(health_csv, moneda, usdclp, "Chequeos de sanidad (si existe)")
 
-    st.markdown("*Archivos detectados en el bundle*")
-    present = []
-    missing = []
-    for f in BUNDLE_FILES:
+    st.markdown("*Archivos esperados vs presentes*")
+    present, missing = [], []
+    for f in REQUIRED_FILES:
         p = os.path.join(bundle_dir, f)
         (present if os.path.exists(p) else missing).append(f)
     st.success("Presentes:\n- " + "\n- ".join(present) if present else "No se detectó ninguno.")

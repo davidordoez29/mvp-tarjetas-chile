@@ -22,7 +22,7 @@ REQ_FILES = {
     "inc_sum":  "incentives_diag_summary.csv",
     "inc_sens": "incentives_sensitivity.csv",
     # Arista 4 (Capital / Provisiones)
-    "cap_port": "capital_portafolio.csv",  # “portafolio” en español
+    "cap_port": "capital_portfolio.csv",  
     "cap_seg":  "capital_segment.csv",
     "cap_det":  "capital_detail.csv",
     # Meta

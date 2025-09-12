@@ -10,8 +10,29 @@ import streamlit as st
 # =========================
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
-# Ubicación por defecto del bundle exportado desde notebooks
+# Carpeta del bundle con los CSV exactos que indicaste
 DEFAULT_BUNDLE_DIR = os.environ.get("BUNDLE_DIR", "").strip() or "out/dashboard_bundle"
+
+BUNDLE_FILES = [
+    "bundle_health_report.csv",
+    "bundle_health_report.json",
+    "bundle_meta.json",
+    "capital_detail.csv",
+    "capital_portfolio.csv",
+    "capital_segment.csv",
+    "default_detail.csv",
+    "default_portfolio.csv",
+    "default_segment.csv",
+    "incentives_detail.csv",
+    "incentives_diag_summary.csv",
+    "incentives_sensitivity.csv",
+    "kpi_defs.json",
+    "segment_defs.json",
+    "yield_curve_segment.csv",
+    "yield_detail.csv",
+    "yield_portfolio.csv",
+    "yield_segment.csv",
+]
 
 # =========================
 # HELPERS (formato & carga)
@@ -22,12 +43,20 @@ def load_csv(path):
         try:
             return pd.read_csv(path)
         except Exception:
-            # intento con ; por si Excel
             try:
                 return pd.read_csv(path, sep=";")
             except Exception:
                 return None
     return None
+
+def load_json(path):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
 def fmt_money(x, moneda="CLP", usdclp=900.0):
     try:
@@ -76,10 +105,10 @@ def show_table_formatted(df, moneda, usdclp, caption=""):
         return
     d = df.copy()
 
-    # Detecta columnas de porcentaje vs. montos (heurística por nombre)
+    # Heurística: columnas de porcentaje por nombre
     pct_keys = ["tasa", "rate", "apr", "pd", "lgd", "pct", "porc", "r_opt", "pdw"]
     def is_pct_col(name):
-        n = name.lower()
+        n = str(name).lower()
         return any(k in n for k in pct_keys)
 
     for col in d.columns:
@@ -101,81 +130,62 @@ with st.sidebar:
     bundle_dir = st.text_input("Carpeta de datos (bundle)", DEFAULT_BUNDLE_DIR)
     moneda = st.radio("Moneda", ["CLP", "USD"], horizontal=True, index=0)
     usdclp = st.number_input("USD↔CLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0)
-    st.caption("Todos los montos se convertirán al vuelo según esta tasa.")
+    st.caption("Todos los montos se convierten según esta tasa.")
+
+    # Verificación rápida de nombres exactos
+    missing = [f for f in BUNDLE_FILES if not os.path.exists(os.path.join(bundle_dir, f))]
+    if missing:
+        st.warning("Archivos faltantes (por nombre exacto):\n- " + "\n- ".join(missing))
 
 # =========================
-# Cargar CSVs (robusto a nombres)
+# CARGA DE ARCHIVOS (nombres EXACTOS)
 # =========================
-# Arista 1 (Default)
-p_def_port = os.path.join(bundle_dir, "default_portfolio.csv")
-p_def_seg  = os.path.join(bundle_dir, "default_segment.csv")
-p_def_det  = os.path.join(bundle_dir, "default_detail.csv")
+# Default
+def_port = load_csv(os.path.join(bundle_dir, "default_portfolio.csv"))
+def_seg  = load_csv(os.path.join(bundle_dir, "default_segment.csv"))
+def_det  = load_csv(os.path.join(bundle_dir, "default_detail.csv"))
 
-# Arista 2 (Yield)
-p_y_port = os.path.join(bundle_dir, "yield_portfolio.csv")
-p_y_seg  = os.path.join(bundle_dir, "yield_segment.csv")
-p_y_det  = os.path.join(bundle_dir, "yield_detail.csv")
-p_y_curv = os.path.join(bundle_dir, "yield_curve_segment.csv")
+# Yield
+y_port = load_csv(os.path.join(bundle_dir, "yield_portfolio.csv"))
+y_seg  = load_csv(os.path.join(bundle_dir, "yield_segment.csv"))
+y_det  = load_csv(os.path.join(bundle_dir, "yield_detail.csv"))
+y_curv = load_csv(os.path.join(bundle_dir, "yield_curve_segment.csv"))
 
-# Arista 3 (Incentivos)
-p_inc_det  = os.path.join(bundle_dir, "incentives_detail.csv")
-p_inc_sum  = os.path.join(bundle_dir, "incentives_diag_summary.csv")
-p_inc_sens = os.path.join(bundle_dir, "incentives_sensitivity.csv")
+# Incentives
+inc_det  = load_csv(os.path.join(bundle_dir, "incentives_detail.csv"))
+inc_sum  = load_csv(os.path.join(bundle_dir, "incentives_diag_summary.csv"))
+inc_sens = load_csv(os.path.join(bundle_dir, "incentives_sensitivity.csv"))
 
-# Arista 4 (Capital) – nombres corregidos
-p_cap_port = os.path.join(bundle_dir, "capital_portfolio.csv")  # antes: capital_portafolio.csv (mal)
-p_cap_seg  = os.path.join(bundle_dir, "capital_segment.csv")
-p_cap_det  = os.path.join(bundle_dir, "capital_detail.csv")
+# Capital
+cap_port = load_csv(os.path.join(bundle_dir, "capital_portfolio.csv"))
+cap_seg  = load_csv(os.path.join(bundle_dir, "capital_segment.csv"))
+cap_det  = load_csv(os.path.join(bundle_dir, "capital_detail.csv"))
 
-# Metadatos/defs (opcionales)
-p_kpi_defs = os.path.join(bundle_dir, "kpi_defs.json")
-p_seg_defs = os.path.join(bundle_dir, "segment_defs.json")
-p_meta     = os.path.join(bundle_dir, "bundle_meta.json")
+# Metadatos / definiciones
+kpi_defs = load_json(os.path.join(bundle_dir, "kpi_defs.json"))
+seg_defs = load_json(os.path.join(bundle_dir, "segment_defs.json"))
+meta     = load_json(os.path.join(bundle_dir, "bundle_meta.json"))
 
-def safe_read_json(path):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-dfs = dict(
-    def_port = load_csv(p_def_port),
-    def_seg  = load_csv(p_def_seg),
-    def_det  = load_csv(p_def_det),
-    y_port   = load_csv(p_y_port),
-    y_seg    = load_csv(p_y_seg),
-    y_det    = load_csv(p_y_det),
-    y_curve  = load_csv(p_y_curv),
-    inc_det  = load_csv(p_inc_det),
-    inc_sum  = load_csv(p_inc_sum),
-    inc_sens = load_csv(p_inc_sens),
-    cap_port = load_csv(p_cap_port),
-    cap_seg  = load_csv(p_cap_seg),
-    cap_det  = load_csv(p_cap_det),
-)
-
-kpi_defs = safe_read_json(p_kpi_defs)
-seg_defs = safe_read_json(p_seg_defs)
-meta     = safe_read_json(p_meta)
+# Health report (opcional)
+health_csv  = load_csv(os.path.join(bundle_dir, "bundle_health_report.csv"))
+health_json = load_json(os.path.join(bundle_dir, "bundle_health_report.json"))
 
 # =========================
 # HEADER
 # =========================
 st.title("📊 MVP Bancario – Optimización en 4 Aristas")
-st.caption("Motor de decisión que integra riesgo (Default), Yield/Pricing, Incentivos y Capital/Provisiones. "
-           "Esta demo compara tu baseline vs. la propuesta optimizada.")
+st.caption("Motor de decisión que integra Riesgo (Default), Yield/Pricing, Incentivos y Capital/Provisiones. "
+           "Comparación baseline vs optimizado, con reglas y métricas auditables.")
 
 # =========================
 # TABS
 # =========================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Arista 1 • Default/Impago",
     "Arista 2 • Yield/Pricing",
     "Arista 3 • Incentivos",
-    "Arista 4 • Capital/Provisiones"
+    "Arista 4 • Capital/Provisiones",
+    "Diagnóstico Bundle"
 ])
 
 # -------------------------
@@ -183,40 +193,33 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # -------------------------
 with tab1:
     st.subheader("Arista 1 — Default / Impago")
-    st.write("Modelos PD/LGD/EAD → Expected Loss (EL). Comparamos el portafolio actual vs. optimizado.")
+    st.write("Modelos PD/LGD/EAD → Expected Loss (EL). Comparamos portafolio actual vs optimizado.")
 
-    port = dfs["def_port"]
-    seg  = dfs["def_seg"]
-    det  = dfs["def_det"]
-
-    if port is None:
+    if def_port is None:
         st.error("Falta default_portfolio.csv")
     else:
-        # Esperados: EAD, EL, Ingreso, Costos, Utilidad (actual/opt)
-        cols_need = [
+        # Columnas esperadas (crea si faltan)
+        for c in [
             "EAD_actual","EAD_optimizado",
             "EL_actual","EL_optimizado",
             "Ingreso_actual","Ingreso_optimizado",
             "Costos_actual","Costos_optimizado",
             "Utilidad_actual","Utilidad_optimizada"
-        ]
-        for c in cols_need:
-            if c not in port.columns:
-                port[c] = 0.0
+        ]:
+            if c not in def_port.columns:
+                def_port[c] = 0.0
 
-        c_kpi = st.container()
-        with c_kpi:
-            st.markdown("*KPIs del Portafolio (Actual vs. Optimizado)*")
-            kpi_row("EAD total", port["EAD_actual"].sum(), port["EAD_optimizado"].sum(), moneda, usdclp, "Exposición")
-            kpi_row("Expected Loss", port["EL_actual"].sum(), port["EL_optimizado"].sum(), moneda, usdclp, "Pérdida esperada")
-            kpi_row("Ingreso Financiero", port["Ingreso_actual"].sum(), port["Ingreso_optimizado"].sum(), moneda, usdclp)
-            kpi_row("Costos Totales", port["Costos_actual"].sum(), port["Costos_optimizado"].sum(), moneda, usdclp)
-            kpi_row("Utilidad", port["Utilidad_actual"].sum(), port["Utilidad_optimizada"].sum(), moneda, usdclp)
+        st.markdown("*KPIs del Portafolio (Actual vs Optimizado)*")
+        kpi_row("EAD total", def_port["EAD_actual"].sum(), def_port["EAD_optimizado"].sum(), moneda, usdclp)
+        kpi_row("Expected Loss", def_port["EL_actual"].sum(), def_port["EL_optimizado"].sum(), moneda, usdclp)
+        kpi_row("Ingreso Financiero", def_port["Ingreso_actual"].sum(), def_port["Ingreso_optimizado"].sum(), moneda, usdclp)
+        kpi_row("Costos Totales", def_port["Costos_actual"].sum(), def_port["Costos_optimizado"].sum(), moneda, usdclp)
+        kpi_row("Utilidad", def_port["Utilidad_actual"].sum(), def_port["Utilidad_optimizada"].sum(), moneda, usdclp)
 
         st.markdown("*Detalle por segmento*")
-        show_table_formatted(seg, moneda, usdclp, "Resumen por segmento")
+        show_table_formatted(def_seg, moneda, usdclp, "Resumen por segmento")
         with st.expander("Detalle por cliente (muestra)"):
-            show_table_formatted(det.head(200) if det is not None else det, moneda, usdclp)
+            show_table_formatted(def_det.head(200) if def_det is not None else def_det, moneda, usdclp)
 
 # -------------------------
 # TAB 2: YIELD / PRICING
@@ -225,15 +228,9 @@ with tab2:
     st.subheader("Arista 2 — Yield / Pricing")
     st.write("Comparamos ingreso/utilidad total y efecto aislado de pricing. Curvas por segmento con bandas de r.")
 
-    y_port = dfs["y_port"]
-    y_seg  = dfs["y_seg"]
-    y_det  = dfs["y_det"]
-    y_curv = dfs["y_curve"]
-
     if y_port is None:
         st.error("Falta yield_portfolio.csv")
     else:
-        # Safeguard columnas típicas
         for c in ["ingreso_base","ingreso_iso","ingreso_opt","utilidad_base","utilidad_iso","utilidad_opt"]:
             if c not in y_port.columns:
                 y_port[c] = 0.0
@@ -245,7 +242,7 @@ with tab2:
         kpi_row("Utilidad (Solo Pricing)", y_port["utilidad_base"].sum(), y_port["utilidad_iso"].sum(), moneda, usdclp)
 
         st.markdown("*Curvas por segmento*")
-        show_table_formatted(y_curv, moneda, usdclp, "Útil para ver sensibilidad de r dentro de bandas")
+        show_table_formatted(y_curv, moneda, usdclp, "Sensibilidad de r dentro de bandas")
         with st.expander("Detalle por cliente (muestra)"):
             show_table_formatted(y_det.head(200) if y_det is not None else y_det, moneda, usdclp)
 
@@ -254,17 +251,14 @@ with tab2:
 # -------------------------
 with tab3:
     st.subheader("Arista 3 — Incentivos")
-    st.write("Motor de asignación de beneficios (bonos, cuotas, cashback, etc.) buscando ROI positivo y control de EL.")
+    st.write("Asignación de beneficios con ROI positivo, midiendo costo e incremental real.")
 
-    det  = dfs["inc_det"]
-    summ = dfs["inc_sum"]
-    sens = dfs["inc_sens"]
-
-    if det is None:
+    if inc_det is None:
         st.error("Falta incentives_detail.csv")
     else:
-        d = det.copy()
-        # Asegura numéricos donde aplique (sin romper ids)
+        d = inc_det.copy()
+
+        # Intentar convertir numéricos sin romper IDs
         for col in d.columns:
             if pd.api.types.is_object_dtype(d[col]):
                 try:
@@ -272,11 +266,10 @@ with tab3:
                 except:
                     pass
 
-        # --- COSTO (monto): preferir columna de monto; si no existe, usar tasa * EAD (e_opt o ead_baseline)
+        # --- COSTO en MONTO ---
         cost_amount_col = next((c for c in [
             "inc_cost","costo_incentivo","costo_incentivo_total","costo_beneficios","costo_incentivos"
         ] if c in d.columns), None)
-
         if cost_amount_col is None or pd.to_numeric(d.get(cost_amount_col, 0), errors="coerce").fillna(0).sum() == 0:
             rate_col = next((c for c in [
                 "costo_incentivo_tasa","inc_tasa","tasa_incentivo","incentivo_tasa"
@@ -289,7 +282,7 @@ with tab3:
 
         total_cost = pd.to_numeric(d.get(cost_amount_col, 0), errors="coerce").fillna(0.0).sum()
 
-        # --- INCREMENTAL (monto): preferir utilidad; luego ingreso; si no, derivar (opt - base)
+        # --- INCREMENTAL (monto) ---
         uplift_col = next((c for c in [
             "delta_util_total","utilidad_incremental","utilidad_uplift","uplift_utilidad"
         ] if c in d.columns), None)
@@ -318,8 +311,8 @@ with tab3:
         st.markdown("*Detalle / Diagnóstico*")
         show_table_formatted(d, moneda, usdclp, "Detalle por cliente/campaña")
         with st.expander("Resumen & Sensibilidades"):
-            show_table_formatted(summ, moneda, usdclp, "Resumen de diagnóstico")
-            show_table_formatted(sens, moneda, usdclp, "Sensibilidades")
+            show_table_formatted(inc_sum, moneda, usdclp, "Resumen de diagnóstico")
+            show_table_formatted(inc_sens, moneda, usdclp, "Sensibilidades")
 
 # -------------------------
 # TAB 4: CAPITAL / PROVISIONES
@@ -329,14 +322,9 @@ with tab4:
     st.write("Proxies IFRS9/Basilea para capital requerido y provisiones. "
              "Mostramos liberación/consumo al pasar de baseline a optimizado.")
 
-    cap_port = dfs["cap_port"]
-    cap_seg  = dfs["cap_seg"]
-    cap_det  = dfs["cap_det"]
-
     if cap_port is None:
-        st.error("Falta capital_portfolio.csv (ojo: nombre en inglés).")
+        st.error("Falta capital_portfolio.csv")
     else:
-        # Columnas típicas (tolerante a ausentes)
         for c in ["capital_req_base","capital_req_opt","prov_base","prov_opt"]:
             if c not in cap_port.columns:
                 cap_port[c] = 0.0
@@ -353,21 +341,35 @@ with tab4:
         kpi_row("Liberación de Provisiones (Δ)", prov_lib_monto, prov_lib_monto, moneda, usdclp)
 
         st.markdown("*Detalle por segmento*")
-        show_table_formatted(cap_seg, moneda, usdclp, "Resumen de capital/provisiones por segmento")
-
+        show_table_formatted(cap_seg, moneda, usdclp, "Resumen por segmento")
         with st.expander("Detalle por cliente (muestra)"):
             show_table_formatted(cap_det.head(200) if cap_det is not None else cap_det, moneda, usdclp)
 
-# =========================
-# FOOTER (ayuda ejecutiva)
-# =========================
-st.divider()
-st.markdown("""
-*¿Por qué nuestro modelo?* Integramos 4 aristas en un único motor:
-- *Default/Impago*: control de pérdidas esperadas (PD·LGD·EAD) con bandas y restricciones de negocio.
-- *Yield/Pricing*: precio por cliente ajustado a riesgo, con curvas y efecto aislado de pricing.
-- *Incentivos*: asignación con ROI positivo (reconstruimos costos/incrementos si el input viene en tasa).
-- *Capital/Provisiones*: proxies IFRS9/Basilea para liberar capital sin deteriorar EL ni ROE.
+# -------------------------
+# TAB 5: DIAGNÓSTICO BUNDLE
+# -------------------------
+with tab5:
+    st.subheader("Diagnóstico del Bundle")
+    st.write("Verifica la integridad y consistencia del paquete de datos usado por el dashboard.")
 
-Con esto, el banco puede *subir ROE, **reducir EL* y *optimizar consumo de capital* con transparencia y reglas auditables.
-""")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("*Meta (bundle_meta.json)*")
+        st.json(meta if meta else {"info": "bundle_meta.json no encontrado o vacío"})
+
+        st.markdown("*Health (bundle_health_report.json)*")
+        st.json(health_json if health_json else {"info": "bundle_health_report.json no encontrado o vacío"})
+
+    with c2:
+        st.markdown("*Health (bundle_health_report.csv)*")
+        show_table_formatted(health_csv, moneda, usdclp, "Si existe, muestra chequeos de sanidad")
+
+    st.markdown("*Archivos detectados en el bundle*")
+    present = []
+    missing = []
+    for f in BUNDLE_FILES:
+        p = os.path.join(bundle_dir, f)
+        (present if os.path.exists(p) else missing).append(f)
+    st.success("Presentes:\n- " + "\n- ".join(present) if present else "No se detectó ninguno.")
+    if missing:
+        st.warning("Faltantes:\n- " + "\n- ".join(missing))

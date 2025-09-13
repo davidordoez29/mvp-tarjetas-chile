@@ -10,25 +10,25 @@ import streamlit as st
 REQ_FILES = {
     # Arista 1 (Default)
     "def_port": "default_portfolio.csv",
-    "def_seg":  "default_segment.csv",
-    "def_det":  "default_detail.csv",
+    "def_seg": "default_segment.csv",
+    "def_det": "default_detail.csv",
     # Arista 2 (Yield)
     "yld_port": "yield_portfolio.csv",
-    "yld_seg":  "yield_segment.csv",
-    "yld_det":  "yield_detail.csv",
+    "yld_seg": "yield_segment.csv",
+    "yld_det": "yield_detail.csv",
     "yld_curv": "yield_curve_segment.csv",
     # Arista 3 (Incentivos)
-    "inc_det":  "incentives_detail.csv",
-    "inc_sum":  "incentives_diag_summary.csv",
+    "inc_det": "incentives_detail.csv",
+    "inc_sum": "incentives_diag_summary.csv",
     "inc_sens": "incentives_sensitivity.csv",
     # Arista 4 (Capital / Provisiones)
-    "cap_port": "capital_portfolio.csv",   # nombre correcto
-    "cap_seg":  "capital_segment.csv",
-    "cap_det":  "capital_detail.csv",
+    "cap_port": "capital_portfolio.csv", # nombre correcto
+    "cap_seg": "capital_segment.csv",
+    "cap_det": "capital_detail.csv",
     # Meta
     "kpi_defs": "kpi_defs.json",
     "seg_defs": "segment_defs.json",
-    "meta":     "bundle_meta.json",
+    "meta": "bundle_meta.json",
 }
 
 CANDIDATE_DIRS = [
@@ -39,7 +39,7 @@ CANDIDATE_DIRS = [
     "/content/out/dashboard_bundle",
 ]
 
-def _dir_ok(d: str) -> bool:
+def _dir_ok(d):
     try:
         if not d or not os.path.isdir(d):
             return False
@@ -48,7 +48,7 @@ def _dir_ok(d: str) -> bool:
     except Exception:
         return False
 
-def autodetect_bundle() -> str | None:
+def autodetect_bundle():
     for d in CANDIDATE_DIRS:
         if _dir_ok(d):
             return d
@@ -84,7 +84,7 @@ def load_bundle(bundle_dir: str):
     return dfs, missing
 
 # ==========================
-# Formato de moneda/porcentaje
+# Formato de moneda/porcentaje + helpers KPI
 # ==========================
 def _to_display_currency(val: float, target: str, usdclp: float) -> float:
     if pd.isna(val):
@@ -120,6 +120,30 @@ def var_pct(actual: float, opt: float) -> float | None:
         return None
     return (opt - actual) / actual * 100.0
 
+def kpi_row(label: str, actual: float, opt: float, moneda: str, usdclp: float, help_text: str = ""):
+    c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
+    with c1:
+        st.metric(label=f"{label} – Actual", value=fmt_money(actual, moneda, usdclp))
+        if help_text:
+            st.caption(help_text)
+    with c2:
+        st.metric(label=f"{label} – Optimizado", value=fmt_money(opt, moneda, usdclp))
+    with c3:
+        vp = var_pct(actual, opt)
+        st.metric(label="VAR %", value=fmt_pct(vp) if vp is not None else "—")
+
+def kpi_row_pct(label: str, actual_pct: float, opt_pct: float, help_text: str = ""):
+    c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
+    with c1:
+        st.metric(label=f"{label} – Actual", value=fmt_pct(actual_pct))
+        if help_text:
+            st.caption(help_text)
+    with c2:
+        st.metric(label=f"{label} – Optimizado", value=fmt_pct(opt_pct))
+    with c3:
+        vp = var_pct(actual_pct, opt_pct)
+        st.metric(label="VAR %", value=fmt_pct(vp) if vp is not None else "—")
+
 def g0(df, col):
     try:
         return df[col].iloc[0] if (isinstance(df, pd.DataFrame) and col in df.columns and not df.empty) else np.nan
@@ -133,7 +157,7 @@ def detect_money_cols(df: pd.DataFrame):
         "capital","prov","lib","_usd","_clp"
     ]
     cols = [c for c in df.columns if any(k in c.lower() for k in key_tokens)]
-    # asegurar columnas mencionadas por ti:
+    # asegurar columnas clave que mencionaste:
     for must in ["EAD_model","EL_model","EAD_model_usd","EL_model_clp"]:
         if must in df.columns and must not in cols:
             cols.append(must)
@@ -198,7 +222,7 @@ def story_incentivos(roi, total_cost, uplift, moneda, usdclp):
 """)
 
 def story_capital(cap_base, cap_opt, prov_base, prov_opt, moneda, usdclp):
-    lib_cap  = (cap_base - cap_opt) if (pd.notna(cap_base) and pd.notna(cap_opt)) else np.nan
+    lib_cap = (cap_base - cap_opt) if (pd.notna(cap_base) and pd.notna(cap_opt)) else np.nan
     lib_prov = (prov_base - prov_opt) if (pd.notna(prov_base) and pd.notna(prov_opt)) else np.nan
     return st.markdown(f"""
 **Qué significa:**
@@ -223,7 +247,6 @@ def compute_incentives_totals(dfs):
 
     # 1) Intento directo con detail
     if isinstance(det, pd.DataFrame) and not det.empty:
-        # costo
         cost_col = next((c for c in det.columns if c.lower() in [
             "inc_cost","costo_incentivo","costo_incentivo_monto",
             "costo_incentivo_total","costo_beneficios","benefit_cost"
@@ -236,14 +259,12 @@ def compute_incentives_totals(dfs):
         if cost_col:
             total_cost = float(pd.to_numeric(det[cost_col], errors="coerce").fillna(0).sum())
 
-        # uplift
         uplift_col = next((c for c in det.columns if c.lower() in [
             "uplift_ingreso","ingreso_uplift","delta_ingreso","ingreso_incremental","uplift_total"
         ]), None)
         if uplift_col:
             uplift = float(pd.to_numeric(det[uplift_col], errors="coerce").fillna(0).sum())
         else:
-            # Fallback por cliente: si tenemos ingreso_base/opt, lo usamos
             if ("ingreso_base" in det.columns) and ("ingreso_opt" in det.columns):
                 uplift = float(pd.to_numeric(det["ingreso_opt"], errors="coerce").fillna(0).sum()
                                - pd.to_numeric(det["ingreso_base"], errors="coerce").fillna(0).sum())
@@ -278,8 +299,8 @@ def compute_capital_portfolio(dfs, RW=0.75, K=0.08):
       3) default_detail.csv (PD*LGD y EAD / e_opt para recomputar)
     """
     cap_port = dfs.get("cap_port")
-    cap_det  = dfs.get("cap_det")
-    def_det  = dfs.get("def_det")
+    cap_det = dfs.get("cap_det")
+    def_det = dfs.get("def_det")
 
     def has_valid_port(df):
         need = ["capital_req_base","capital_req_opt","prov_base","prov_opt"]
@@ -317,17 +338,15 @@ def compute_capital_portfolio(dfs, RW=0.75, K=0.08):
             tau = (pd.to_numeric(dd["pd_score"], errors="coerce").fillna(0).clip(0,1) *
                    pd.to_numeric(dd["lgd_pred"], errors="coerce").fillna(0).clip(0,1)).clip(0,1)
         else:
-            # último recurso: EL_base / EAD
             el_b = pd.to_numeric(dd.get("EL_baseline", 0), errors="coerce").fillna(0)
             tau = (el_b / ead_b.replace(0, np.nan)).replace([np.inf,-np.inf], np.nan).fillna(0).clip(0,1)
 
         cap_base = float((ead_b * RW * K).sum())
-        cap_opt  = float((e_opt * RW * K).sum())
+        cap_opt = float((e_opt * RW * K).sum())
         prov_base= float((tau * ead_b).sum())
         prov_opt = float((tau * e_opt).sum())
         return cap_base, cap_opt, prov_base, prov_opt
 
-    # Si no hay nada, retornamos ceros (y el tab explicará que faltan insumos)
     return 0.0, 0.0, 0.0, 0.0
 
 # ==========================
@@ -394,9 +413,9 @@ Nos centramos aquí porque **controlar EL** permite **asignar más exposición**
     port = dfs.get("def_port")
     if isinstance(port, pd.DataFrame) and not port.empty:
         EAD_act = g0(port, "EAD_actual"); EAD_opt = g0(port, "EAD_optimizado")
-        EL_act  = g0(port, "EL_actual");  EL_opt  = g0(port, "EL_optimizado")
+        EL_act = g0(port, "EL_actual"); EL_opt = g0(port, "EL_optimizado")
         Ing_act = g0(port, "Ingreso_actual"); Ing_opt = g0(port, "Ingreso_optimizado")
-        Cost_act= g0(port, "Costos_actual");  Cost_opt= g0(port, "Costos_optimizado")
+        Cost_act= g0(port, "Costos_actual"); Cost_opt= g0(port, "Costos_optimizado")
         Uti_act = g0(port, "Utilidad_actual");Uti_opt = g0(port, "Utilidad_optimizada")
         PDw_act = g0(port, "PD_pond_actual"); PDw_opt = g0(port, "PD_pond_optimizado")
 
@@ -435,114 +454,4 @@ Nos centramos aquí porque el precio correcto por cliente/segmento **maximiza in
     port = dfs.get("yld_port")
     if isinstance(port, pd.DataFrame) and not port.empty:
         Ing_base = g0(port, "ingreso_base"); Ing_iso = g0(port, "ingreso_iso"); Ing_opt = g0(port, "ingreso_opt")
-        Uti_base = g0(port, "utilidad_base"); Uti_iso = g0(port, "utilidad_iso"); Uti_opt = g0(port, "utilidad_opt")
-        EL_base  = g0(port, "EL_baseline");   EL_iso  = g0(port, "el_iso");        EL_opt = g0(port, "el_opt")
-
-        kpi_row("Ingreso (Total)", Ing_base, Ing_opt, moneda, usdclp, "Precio + Volumen")
-        kpi_row("Ingreso (Solo Pricing)", Ing_base, Ing_iso, moneda, usdclp, "EAD fijado en baseline")
-        kpi_row("Utilidad (Total)", Uti_base, Uti_opt, moneda, usdclp, "Precio + Volumen")
-        kpi_row("Utilidad (Solo Pricing)", Uti_base, Uti_iso, moneda, usdclp, "EAD fijado en baseline")
-        kpi_row("EL", EL_base, EL_opt, moneda, usdclp, "Pérdida esperada total")
-
-        st.markdown("---")
-        story_yield(Ing_base, Ing_iso, Ing_opt, Uti_base, Uti_iso, Uti_opt)
-    else:
-        st.error("No se encontraron archivos de *Yield*.")
-
-# ================
-# Arista 3 – Incentivos
-# ================
-with tabs[2]:
-    st.subheader("Arista 3 — Incentivos")
-    st.markdown("""
-**¿Qué es y por qué importa?**  
-Definimos **qué incentivos** (beneficios, descuentos, puntos) aplicar y **a quién** para **generar ingreso incremental** con **ROI positivo**.  
-Nos centramos aquí porque mover comportamiento con el **mínimo incentivo efectivo** acelera crecimiento **rentable**.
-""")
-    st.markdown("""
-**KPIs (definiciones):**
-- **Costo de Incentivos:** gasto total en beneficios/descuentos.
-- **Ingreso Incremental:** ingresos atribuibles al esquema de incentivos.
-- **ROI:** Ingreso Incremental / Costo de Incentivos.
-""")
-
-    # KPIs de incentivos con fallbacks robustos
-    total_cost, uplift, roi = compute_incentives_totals(dfs)
-
-    kpi_row("Costo de Incentivos", total_cost, total_cost, moneda, usdclp, "Suma de costos de beneficios")
-    kpi_row("Ingreso Incremental", uplift, uplift, moneda, usdclp, "Suma de incrementos")
-    st.metric("ROI (Ingreso/Costo)", fmt_pct(roi*100 if pd.notna(roi) else np.nan))
-
-    st.markdown("---")
-    story_incentivos(roi, total_cost, uplift, moneda, usdclp)
-
-    # Tabla de detalle (después de KPIs y explicación)
-    det = dfs.get("inc_det")
-    if isinstance(det, pd.DataFrame) and not det.empty:
-        st.markdown("**Detalle (muestra):**")
-        money_cols = detect_money_cols(det)
-        pct_cols   = detect_pct_cols(det)
-        try:
-            st.dataframe(styler_money(det.head(200), money_cols, moneda, usdclp, pct_cols=pct_cols),
-                         use_container_width=True)
-        except Exception:
-            st.dataframe(det.head(200), use_container_width=True)
-    else:
-        st.info("No hay detalle de incentivos disponible en el bundle.")
-
-# ================
-# Arista 4 – Capital / Provisiones
-# ================
-with tabs[3]:
-    st.subheader("Arista 4 — Capital / Provisiones")
-    st.markdown("""
-**¿Qué es y por qué importa?**  
-Medimos el **capital regulatorio** consumido (proxy Basel-like **RW × K × EAD**) y las **provisiones** (≈ EL), antes y después de optimizar.  
-Nos centramos aquí porque **liberar capital** y **estabilizar provisiones** permite crecer con **disciplina regulatoria**.
-""")
-    st.markdown("""
-**KPIs (definiciones):**
-- **Capital Requerido (proxy):** RW × K × EAD.
-- **Provisiones (≈ EL):** pérdida esperada del portafolio.
-- **Liberación:** Actual − Optimizado (clip en 0 si no hay liberación).
-""")
-
-    # Reconstrucción robusta si hace falta
-    cap_base, cap_opt, prov_base, prov_opt = compute_capital_portfolio(dfs)
-
-    kpi_row("Capital Requerido", cap_base, cap_opt, moneda, usdclp, "Proxy RW×K×EAD")
-    kpi_row("Provisiones",       prov_base, prov_opt, moneda, usdclp, "≈ EL")
-
-    lib_cap  = (cap_base - cap_opt) if (pd.notna(cap_base) and pd.notna(cap_opt)) else np.nan
-    lib_prov = (prov_base - prov_opt) if (pd.notna(prov_base) and pd.notna(prov_opt)) else np.nan
-
-    c1, c2 = st.columns(2)
-    with c1: st.metric("Liberación de Capital", fmt_money(lib_cap, moneda, usdclp))
-    with c2: st.metric("Liberación de Provisiones", fmt_money(lib_prov, moneda, usdclp))
-
-    st.markdown("---")
-    story_capital(cap_base, cap_opt, prov_base, prov_opt, moneda, usdclp)
-
-    # Tablas con formato
-    cap_seg = dfs.get("cap_seg"); cap_det = dfs.get("cap_det")
-    if isinstance(cap_seg, pd.DataFrame) and not cap_seg.empty:
-        st.markdown("**Capital por segmento:**")
-        money_cols = detect_money_cols(cap_seg)
-        try:
-            st.dataframe(styler_money(cap_seg, money_cols, moneda, usdclp), use_container_width=True)
-        except Exception:
-            st.dataframe(cap_seg, use_container_width=True)
-
-    if isinstance(cap_det, pd.DataFrame) and not cap_det.empty:
-        with st.expander("Detalle de capital (muestra)"):
-            money_cols = detect_money_cols(cap_det)
-            try:
-                st.dataframe(styler_money(cap_det.head(200), money_cols, moneda, usdclp), use_container_width=True)
-            except Exception:
-                st.dataframe(cap_det.head(200), use_container_width=True)
-
-# ==========================
-# Footer
-# ==========================
-st.markdown("---")
-st.caption("© MVP Bancario — Motor de Optimización (4 aristas). Explicaciones ejecutivas y KPIs conectados.")
+        Uti_base = g0(port, "utilidad_base"); Uti_iso = g0(port, "ut

@@ -1,4 +1,4 @@
-# app/app_dashboard.py — robusto, con formateo y sin KeyError en Arista 3
+# app/app_dashboard.py — robusto, con formateo y corrección KeyError en Incentivos
 
 import os, glob, json, math
 import pandas as pd
@@ -45,8 +45,7 @@ CANDIDATE_DIRS = [
 # ==========================
 def _dir_ok(d: str) -> bool:
     try:
-        if not d or not os.path.isdir(d):
-            return False
+        if not d or not os.path.isdir(d): return False
         hits = sum(os.path.exists(os.path.join(d, v)) for v in REQ_FILES.values())
         return hits >= 6
     except Exception:
@@ -54,8 +53,7 @@ def _dir_ok(d: str) -> bool:
 
 def autodetect_bundle() -> str | None:
     for d in CANDIDATE_DIRS:
-        if _dir_ok(d):
-            return d
+        if _dir_ok(d): return d
     try:
         bases = ["/content/mvp-tarjetas-chile", "/content", "."]
         candidates = []
@@ -91,43 +89,34 @@ def load_bundle(bundle_dir: str):
 # Formato de números (CLP/USD)
 # ==========================
 def _to_display_currency(val: float, target: str, usdclp: float) -> float:
-    if pd.isna(val):
-        return np.nan
+    if pd.isna(val): return np.nan
     if target.upper() == "USD":
         return float(val) / float(usdclp) if usdclp else np.nan
     return float(val)
 
 def fmt_money_val(val: float, target: str, usdclp: float) -> str:
-    if val is None or (isinstance(val, float) and math.isnan(val)):
-        return "—"
+    if val is None or (isinstance(val, float) and math.isnan(val)): return "—"
     x = _to_display_currency(val, target, usdclp)
-    if x is None or (isinstance(x, float) and math.isnan(x)):
-        return "—"
-    neg = x < 0
-    x = abs(x)
-    ent = int(x)
-    dec = int(round((x - ent) * 100))
-    if dec == 100:
-        ent += 1; dec = 0
+    if x is None or (isinstance(x, float) and math.isnan(x)): return "—"
+    neg = x < 0; x = abs(x)
+    ent = int(x); dec = int(round((x - ent) * 100))
+    if dec == 100: ent += 1; dec = 0
     ent_str = f"{ent:,}".replace(",", ".")
     return f"-{ent_str},{dec:02d}" if neg else f"{ent_str},{dec:02d}"
 
 def fmt_pct_val(val: float) -> str:
-    if val is None or (isinstance(val, float) and math.isnan(val)):
-        return "—"
+    if val is None or (isinstance(val, float) and math.isnan(val)): return "—"
     return f"{val:.2f}%".replace(".", ",")
 
 def var_pct(actual: float, opt: float) -> float | None:
-    if actual is None or pd.isna(actual) or actual == 0:
-        return None
+    if actual is None or pd.isna(actual) or actual == 0: return None
     return (opt - actual) / actual * 100.0
 
 def kpi_row(label: str, actual: float, opt: float, moneda: str, usdclp: float, help_text: str = ""):
     c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
     with c1:
         st.metric(label=f"{label} – Actual", value=fmt_money_val(actual, moneda, usdclp))
-        if help_text:
-            st.caption(help_text)
+        if help_text: st.caption(help_text)
     with c2:
         st.metric(label=f"{label} – Optimizado", value=fmt_money_val(opt, moneda, usdclp))
     with c3:
@@ -138,8 +127,7 @@ def kpi_row_pct(label: str, actual_pct: float, opt_pct: float, help_text: str = 
     c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
     with c1:
         st.metric(label=f"{label} – Actual", value=fmt_pct_val(actual_pct))
-        if help_text:
-            st.caption(help_text)
+        if help_text: st.caption(help_text)
     with c2:
         st.metric(label=f"{label} – Optimizado", value=fmt_pct_val(opt_pct))
     with c3:
@@ -191,9 +179,6 @@ tabs = st.tabs([
     "Arista 4 – Capital/Provisiones"
 ])
 
-# ==============================
-# Intro general a las aristas
-# ==============================
 with st.expander("¿Qué resuelve cada arista?"):
     st.markdown("""
 *Arista 1 (Default/Impago):* Reduce la *Pérdida Esperada (EL)* administrando la exposición (EAD) por cliente/segmento sin frenar innecesariamente el negocio.<br>
@@ -208,12 +193,10 @@ with st.expander("¿Qué resuelve cada arista?"):
 with tabs[0]:
     st.subheader("Arista 1 – Default/Impago")
     st.markdown("""
-*Qué ves aquí:* impacto del modelo en pérdidas esperadas (EL), exposición (EAD), ingreso y utilidad neta.<br>
 *KPIs:*
 - *EAD* (Exposure at Default): Exposición en riesgo.
 - *EL* (Expected Loss): PD × LGD × EAD.
-- *Ingreso*: APR × EAD.
-- *Costos*: Financieros + Operativos.
+- *Ingreso: APR × EAD. **Costos*: Financieros + Operativos.
 - *Utilidad*: Ingreso − EL − Costos.
 - *PD ponderado*: PD promedio ponderado por EAD.
 """, unsafe_allow_html=True)
@@ -251,7 +234,6 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("Arista 2 – Yield/Pricing")
     st.markdown("""
-*Qué ves aquí:* efecto del pricing (APR) en ingreso y utilidad, aislando impacto de precio vs. precio+volumen.<br>
 *KPIs:*
 - *Ingreso/Utilidad (Total)*: usando r_opt y e_opt.
 - *Ingreso/Utilidad (Solo Pricing)*: usando r_opt con EAD = baseline.
@@ -276,12 +258,11 @@ with tabs[1]:
     st.caption("Historia: ajustamos APR por segmento según elasticidad; el precio correcto maximiza margen sin disparar EL.")
 
 # ================
-# Arista 3 – Incentivos
+# Arista 3 – Incentivos (blindada)
 # ================
 with tabs[2]:
     st.subheader("Arista 3 – Incentivos")
     st.markdown("""
-*Qué ves aquí:* costo de incentivos vs. incremento esperado de ingreso. ROI del esquema propuesto.<br>
 *KPIs (portafolio):*
 - *Costo Incentivos* (CLP/USD).
 - *Ingreso Incremental* (CLP/USD).
@@ -291,44 +272,79 @@ with tabs[2]:
     det  = dfs.get("inc_det")
     summ = dfs.get("inc_sum")
 
-    # Totales de portafolio, con fallback si el summary no viene por segmento
-    total_cost = np.nan
-    uplift     = np.nan
-    roi        = np.nan
+    # Totales de portafolio desde detalle (si existe)
+    total_cost = np.nan; uplift = np.nan; roi = np.nan
+    cost_col = None; uplift_col = None
 
     if isinstance(det, pd.DataFrame) and not det.empty:
-        # Detectar columnas posibles
-        cost_col = next((c for c in ["inc_cost","costo_incentivo","costo_incentivo_monto","costo_incentivo_total"]
-                         if c in det.columns), None)
-        if cost_col is None and ("costo_incentivo_tasa" in det.columns and "e_opt" in det.columns):
-            det["_inc_cost_"] = pd.to_numeric(det["costo_incentivo_tasa"], errors="coerce").fillna(0) * \
-                                  pd.to_numeric(det["e_opt"], errors="coerce").fillna(0)
-            cost_col = "_inc_cost_"
+        # Detectar columnas de costo
+        for c in ["inc_cost","costo_incentivo","costo_incentivo_monto","costo_incentivo_total"]:
+            if c in det.columns: cost_col = c; break
+        if cost_col is None and ("costo_incentivo_tasa" in det.columns):
+            # preferimos e_opt si existe; si no, ead_baseline
+            base_e = "e_opt" if "e_opt" in det.columns else ("ead_baseline" if "ead_baseline" in det.columns else None)
+            if base_e is not None:
+                det["_inc_cost_"] = pd.to_numeric(det["costo_incentivo_tasa"], errors="coerce").fillna(0)\
+                                     * pd.to_numeric(det[base_e], errors="coerce").fillna(0)
+                cost_col = "_inc_cost_"
         if cost_col is None:
-            det["_inc_cost_"] = 0.0
-            cost_col = "_inc_cost_"
+            det["_inc_cost"] = 0.0; cost_col = "inc_cost_"
 
-        uplift_col = next((c for c in ["ingreso_uplift","uplift_ingreso","delta_ingreso","ingreso_incremental"]
-                           if c in det.columns), None)
+        # Detectar columnas de uplift
+        for c in ["ingreso_uplift","uplift_ingreso","delta_ingreso","ingreso_incremental"]:
+            if c in det.columns: uplift_col = c; break
         if uplift_col is None:
-            det["_uplift_"] = 0.0
-            uplift_col = "_uplift_"
+            det["_uplift"] = 0.0; uplift_col = "uplift_"
 
         total_cost = pd.to_numeric(det[cost_col], errors="coerce").fillna(0).sum()
         uplift     = pd.to_numeric(det[uplift_col], errors="coerce").fillna(0).sum()
         roi        = (uplift/total_cost) if total_cost>0 else np.nan
 
-    # Si existe summary de portafolio, úsalo para mostrar tabla (sin exigir 'segmento')
+    # Normalizar columnas del resumen si existe
     if isinstance(summ, pd.DataFrame) and not summ.empty:
-        show_cols = [c for c in ["inc_cost_total","ingreso_uplift_total","roi","segmento"] if c in summ.columns]
-        st.dataframe(
-            summ[show_cols].rename(columns={
-                "inc_cost_total":"Costo Incentivos (total)",
-                "ingreso_uplift_total":"Ingreso Incremental (total)",
-                "roi":"ROI"
-            }),
-            use_container_width=True
+        rename_map = {}
+        for c in list(summ.columns):
+            lc = str(c).strip().lower()
+            if lc in ["inc_cost_total","inc_cost","costo_total","costo_incentivo_total","costo_incentivos_total"]:
+                rename_map[c] = "inc_cost_total"
+            elif lc in ["ingreso_uplift_total","ingreso_uplift","uplift_ingreso","ingreso_incremental","delta_ingreso_total","delta_ingreso"]:
+                rename_map[c] = "ingreso_uplift_total"
+            elif lc in ["roi","roi_total","retorno","retorno_beneficio"]:
+                rename_map[c] = "roi"
+            elif lc in ["segmento","segment","segment_name"]:
+                rename_map[c] = "segmento"
+        if rename_map:
+            summ = summ.rename(columns=rename_map)
+
+    # Tabla de resumen preferida:
+    showed_table = False
+    if isinstance(summ, pd.DataFrame) and not summ.empty:
+        wanted = ["segmento","inc_cost_total","ingreso_uplift_total","roi"]
+        inter  = [c for c in wanted if c in summ.columns]
+        if inter:
+            dfshow = summ.loc[:, inter].copy()
+            # Formateo
+            money_cols = [c for c in inter if c in ["inc_cost_total","ingreso_uplift_total"]]
+            if money_cols:
+                dfshow = format_df_currency(dfshow, money_cols, moneda, usdclp)
+            if "roi" in dfshow.columns:
+                dfshow["roi"] = dfshow["roi"].apply(lambda x: fmt_pct_val(x*100 if pd.notna(x) else np.nan))
+            st.markdown("*Resumen de incentivos*")
+            st.dataframe(dfshow, use_container_width=True)
+            showed_table = True
+
+    # Si no logramos mostrar summary, intentamos por segmento desde el detalle:
+    if not showed_table and isinstance(det, pd.DataFrame) and not det.empty and ("segmento" in det.columns):
+        g = det.groupby("segmento", as_index=False).agg(
+            inc_cost_total = (cost_col,   lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()),
+            ingreso_uplift_total = (uplift_col, lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum())
         )
+        g["roi"] = np.where(g["inc_cost_total"]>0, g["ingreso_uplift_total"]/g["inc_cost_total"], np.nan)
+        g_fmt = format_df_currency(g, ["inc_cost_total","ingreso_uplift_total"], moneda, usdclp)
+        g_fmt["roi"] = g["roi"].apply(lambda x: fmt_pct_val(x*100 if pd.notna(x) else np.nan))
+        st.markdown("*Resumen de incentivos por segmento (derivado del detalle)*")
+        st.dataframe(g_fmt, use_container_width=True)
+        showed_table = True
 
     # KPIs (siempre mostramos)
     kpi_row("Costo de Incentivos", total_cost, total_cost, moneda, usdclp, "Suma de costos de beneficios")
@@ -353,7 +369,6 @@ with tabs[2]:
 with tabs[3]:
     st.subheader("Arista 4 – Capital / Provisiones")
     st.markdown("""
-*Qué ves aquí:* requerimientos de capital y provisiones (proxy) antes y después de la optimización.<br>
 *KPIs:*
 - *Capital Requerido* (proxy RW×K×EAD).
 - *Provisiones* ~ EL.

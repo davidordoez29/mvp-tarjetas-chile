@@ -3,72 +3,17 @@ import os as _os
 from pathlib import Path as _Path
 
 def _resolve_bundle_dir():
-    # Prioridad 1: entorno
     _env = _os.environ.get("BUNDLE_DIR","").strip()
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-clients_p = BUNDLE_DIR / "dashboard_bundle_clients.csv"
-segs_p    = BUNDLE_DIR / "dashboard_bundle_segments.csv"
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_FORCE_BUNDLE_PATHS START
-
-# <<< WDOF_FORCE_BUNDLE_PATHS END
-# >>> WDOF_DIAG START
-try:
-    import streamlit as st
-    from pathlib import Path as _P
-    with _st.sidebar:
-        _st.markdown("### Diagnóstico Bundle")
-        _st.write("BUNDLE_DIR (app):", str(BUNDLE_DIR))
-        _c = _P(BUNDLE_DIR)/"dashboard_bundle_clients.csv"
-        _s = _P(BUNDLE_DIR)/"dashboard_bundle_segments.csv"
-        _st.write("clients_csv:", "✅" if _c.exists() else "❌", str(_c))
-        _st.write("segments_csv:", "✅" if _s.exists() else "❌", str(_s))
-except Exception:
-    pass
-# <<< WDOF_DIAG END
     _cand = []
     if _env:
         _cand.append(_Path(_env))
     try:
-        repo_root = _Path(file_).resolve().parents[1]
+        repo_root = Path(file_).resolve().parents[1]
         _cand += [
-            _repo_root/"out"/"dashboard_bundle",
-            _repo_root/"out",
-            _Path("/content")/"mvp-tarjetas-chile"/"out"/"dashboard_bundle",
-            _Path("/content")/"out"/"dashboard_bundle"
+            repo_root / "out" / "dashboard_bundle",
+            repo_root / "out",
+            _Path("/content") / "mvp-tarjetas-chile" / "out" / "dashboard_bundle",
+            _Path("/content") / "out" / "dashboard_bundle",
         ]
     except Exception:
         pass
@@ -79,9 +24,9 @@ except Exception:
                 return c
         except Exception:
             pass
-    # fallback: si viene env sin validar, úsalo; si no, cwd
     return _Path(_env) if _env else _Path(".")
 # <<< WDOF_BUNDLE_PATCH END
+
 # app/app_dashboard.py — robusto, con formateo y corrección KeyError en Incentivos
 
 import os, glob, json, math

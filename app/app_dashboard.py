@@ -1,8 +1,11 @@
 # app/app_dashboard.py
 # =============================================================================
 # Dashboard WDOF – MVP Tarjetas (Default, Yield, Incentivos, Capital)
-# Auto-repara: si faltan bundle CSVs, intenta construirlos desde master/data_raw
-# y, como último recurso, simula un bundle pequeño para no dejar de operar.
+# - Pestañas por arista
+# - Selector CLP/USD y tipo de cambio (CLP por USD)
+# - Formato: miles con puntos y SIEMPRE 2 decimales (incluye %)
+# - KPI definitions y storytelling
+# - Auto-heal del bundle si falta (construye desde master/raw; última opción simula)
 # =============================================================================
 
 from pathlib import Path
@@ -23,12 +26,6 @@ def nz(s, lo=None, hi=None, fill=0.0):
         x = x.clip(lower=lo, upper=hi)
     return x
 
-def fmt_clp(v):
-    try:
-        return f"$ {v:,.0f}".replace(",", ".")
-    except Exception:
-        return str(v)
-
 def rename_any(df, mapping):
     out = df.copy()
     for dst, candidates in mapping.items():
@@ -37,6 +34,32 @@ def rename_any(df, mapping):
                 out = out.rename(columns={c: dst})
                 break
     return out
+
+# ---- Formato numérico chileno (miles con punto y coma decimal), 2 decimales
+def fmt_num2(v):
+    try:
+        s = f"{float(v):,.2f}"          # 1,234,567.89
+        s = s.replace(",", "").replace(".", ",").replace("", ".")  # 1.234.567,89
+        return s
+    except Exception:
+        return str(v)
+
+def fmt_money(v, currency="CLP"):
+    s = fmt_num2(v)
+    return (f"$ {s}" if currency == "CLP" else f"US$ {s}")
+
+def fmt_pct(v):
+    return f"{(float(v)*100):,.2f}".replace(",", "").replace(".", ",").replace("", ".") + " %"
+
+# ---- Conversión de moneda (asumimos montos en CLP dentro del bundle)
+def convert_amount(x, currency="CLP", fx=900.0):
+    # fx = CLP por 1 USD; si USD, dividimos por fx
+    if isinstance(x, (pd.Series, pd.Index)):
+        return x / fx if currency == "USD" else x
+    try:
+        return (float(x) / fx) if currency == "USD" else float(x)
+    except Exception:
+        return x
 
 # ----------------------- Resolve bundle & self-heal --------------------------
 @st.cache_data(show_spinner=False)
@@ -68,16 +91,9 @@ def _resolve_bundle_dir() -> Path:
                     return c
         except Exception:
             pass
-    # si no encontró, preferimos dentro del repo
     return ( _resolve_repo_root() / "out" / "dashboard_bundle" )
 
 def _build_from_master_or_raw(bundle_dir: Path) -> bool:
-    """
-    Intenta crear el bundle:
-    1) desde out/master_piso3.csv + out/opt_output_piso3.csv (si existe)
-    2) desde data/raw (clientes, labels, ead, cuentas, saldos)
-    return True si pudo crear ambos CSV.
-    """
     repo = _resolve_repo_root()
     out_dir   = repo / "out"
     data_raw  = repo / "data" / "raw"
@@ -87,7 +103,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
     opt_p    = out_dir / "opt_output_piso3.csv"
 
     def ensure_clients_segments(base_df: pd.DataFrame, opt_df: pd.DataFrame | None):
-        # opt plano si no existe
         if opt_df is None or "id_cliente" not in opt_df.columns:
             opt_df = base_df[["id_cliente","apr_efectiva","ead_baseline"]].rename(
                 columns={"apr_efectiva":"r_opt","ead_baseline":"e_opt"}
@@ -130,7 +145,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
         )
         return clients, segs
 
-    # 1) Intentar desde master
     try:
         if master_p.exists():
             base = pd.read_csv(master_p)
@@ -142,7 +156,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
                 "lgd_pred":     ["lgd_pred","lgd","lgd_hat","loss_given_default"],
                 "segmento":     ["segmento","segment","seg","bucket"],
             })
-            # defaults si faltan
             for col, d in [("apr_efectiva",0.35), ("ead_baseline",0.0), ("pd_score",0.05), ("lgd_pred",0.45)]:
                 if col not in base.columns: base[col] = d
             base["apr_efectiva"] = nz(base["apr_efectiva"], lo=0.0, hi=1.0, fill=0.35)
@@ -172,7 +185,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
         cuentas_p  = data_raw / "cuentas.csv"
         ead_p      = data_raw / "ead_baseline.csv"
 
-        # mínimos
         if not (clientes_p.exists() and labels_p.exists()):
             return False
 
@@ -192,7 +204,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
         if "pd_score" not in labels.columns: labels["pd_score"] = 0.05
         if "lgd_pred" not in labels.columns: labels["lgd_pred"] = 0.45
 
-        # EAD
         if ead_p.exists():
             ead_df = pd.read_csv(ead_p)
             ead_df = rename_any(ead_df, {"id_cliente":["id_cliente","customer_id","id"],
@@ -213,7 +224,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
             else:
                 ead_df = clientes[["id_cliente"]].assign(ead_baseline=0.0)
 
-        # APR
         apr_df = None
         if cuentas_p.exists():
             ctas = pd.read_csv(cuentas_p)
@@ -230,7 +240,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
         base = base.merge(ead_df, on="id_cliente", how="left")
         base = base.merge(labels[["id_cliente","pd_score","lgd_pred"]], on="id_cliente", how="left")
 
-        # defaults + saneo
         for col, d in [("apr_efectiva",0.35), ("ead_baseline",0.0), ("pd_score",0.05), ("lgd_pred",0.45)]:
             if col not in base.columns: base[col] = d
         base["apr_efectiva"] = nz(base["apr_efectiva"], lo=0.0, hi=1.0, fill=0.35)
@@ -241,7 +250,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
             q = pd.qcut(base["pd_score"], q=4, labels=["Q1_bajo","Q2","Q3","Q4_alto"])
             base["segmento"] = q.astype(str)
 
-        # guardar master para trazabilidad
         out_dir.mkdir(parents=True, exist_ok=True)
         base.to_csv(out_dir/"master_piso3.csv", index=False)
 
@@ -254,7 +262,6 @@ def _build_from_master_or_raw(bundle_dir: Path) -> bool:
         return False
 
 def _simulate_bundle(bundle_dir: Path) -> None:
-    """Último recurso: simula un bundle pequeño pero válido."""
     n = 2000
     rng = np.random.default_rng(7)
     df = pd.DataFrame({
@@ -290,26 +297,19 @@ def _simulate_bundle(bundle_dir: Path) -> None:
 
 @st.cache_data(show_spinner=False)
 def ensure_bundle():
-    """
-    Garantiza que existan los 2 CSV del bundle; si no, intenta construirlos;
-    si falla, simula.
-    """
     bdir = _resolve_bundle_dir()
     cpath = bdir/"dashboard_bundle_clients.csv"
     spath = bdir/"dashboard_bundle_segments.csv"
     if cpath.exists() and spath.exists():
         return bdir, True, "ok (preexistente)"
-    # intentar construir
     ok = _build_from_master_or_raw(bdir)
     if ok:
         return bdir, True, "construido"
-    # simular
     _simulate_bundle(bdir)
     return bdir, True, "simulado"
 
 @st.cache_data(show_spinner=False)
 def load_bundle():
-    """Carga el bundle ya garantizado por ensure_bundle()."""
     bdir, ok, how = ensure_bundle()
     cpath = bdir / "dashboard_bundle_clients.csv"
     spath = bdir / "dashboard_bundle_segments.csv"
@@ -326,7 +326,6 @@ def load_bundle():
     clients = pd.read_csv(cpath)
     segments = pd.read_csv(spath)
 
-    # Tipos y límites
     for col in ["apr_efectiva","r_opt","pd_score","lgd_pred"]:
         if col in clients.columns: clients[col] = nz(clients[col], lo=0.0, hi=1.0)
     for col in ["ead_baseline","e_opt","ingreso_base","ingreso_opt","EL_base","EL_opt"]:
@@ -336,10 +335,42 @@ def load_bundle():
 
     return clients, segments, bdir, diags
 
-def kpi_totals(clients: pd.DataFrame):
-    df = clients.copy()
+# ------------------------- Sidebar: moneda y diagnóstico ---------------------
+st.set_page_config(page_title="MVP Bancario – WDOF", layout="wide")
+st.title("MVP Bancario – Motor WDOF (Tarjetas)")
+
+with st.sidebar:
+    st.header("Configuración")
+    currency = st.radio("Moneda de visualización", options=["CLP","USD"], index=0, horizontal=True)
+    fx = st.number_input("Tipo de cambio (CLP por 1 USD)", min_value=1.0, value=900.0, step=1.0, format="%.2f")
+
+clients, segments, bundle_dir, diags = load_bundle()
+
+with st.sidebar:
+    st.header("Diagnóstico bundle")
+    st.write("Estado:", diags.get("status"))
+    st.write("BUNDLE_DIR:", diags["bundle_dir"])
+    st.write("clients.csv:", "✅" if diags["clients_exists"] else "❌", diags["clients_path"])
+    st.write("segments.csv:", "✅" if diags["segments_exists"] else "❌", diags["segments_path"])
+    st.write("Reglas capital: RW", RISK_WEIGHT, " | Ratio", CAPITAL_RATIO)
+
+# ---------- Conversión de montos al vuelo según moneda elegida ----------
+money_cols_clients = ["ingreso_base","ingreso_opt","EL_base","EL_opt","ead_baseline","e_opt"]
+for c in money_cols_clients:
+    if c in clients.columns:
+        clients[c] = convert_amount(clients[c], currency=currency, fx=fx)
+
+money_cols_segs = ["ingreso_base","ingreso_opt","EL_base","EL_opt","ead_base","ead_opt"]
+for c in money_cols_segs:
+    if c in segments.columns:
+        segments[c] = convert_amount(segments[c], currency=currency, fx=fx)
+
+# ---------------------------- KPIs agregados --------------------------------
+def kpi_totals(clients_df: pd.DataFrame):
+    df = clients_df.copy()
     delta_yield = float(df["ingreso_opt"].sum() - df["ingreso_base"].sum())
     delta_EL    = float(df["EL_opt"].sum()      - df["EL_base"].sum())
+    # Incentivos: usa columnas inc_* si existen; si no, 0
     delta_inc   = float(df.get("inc_benefit_opt", pd.Series([0]*len(df))).sum()
                         - df.get("inc_benefit_base", pd.Series([0]*len(df))).sum())
     cap_base = float(nz(df["ead_baseline"]).sum() * RISK_WEIGHT * CAPITAL_RATIO)
@@ -351,83 +382,45 @@ def kpi_totals(clients: pd.DataFrame):
 
 def show_kpi_row(totals: dict):
     col1,col2,col3,col4,col5 = st.columns(5)
-    col1.metric("Δ Yield",   fmt_clp(totals.get("Δ Yield",0)))
-    col2.metric("Δ EL",      fmt_clp(totals.get("Δ EL",0)))
-    col3.metric("Δ Inc",     fmt_clp(totals.get("Δ Inc",0)))
-    col4.metric("Δ Capital", fmt_clp(totals.get("Δ Cap",0)))
-    col5.metric("Liberación de Capital", fmt_clp(totals.get("Lib Cap",0)))
+    col1.metric("Δ Yield",   fmt_money(totals.get("Δ Yield",0), currency))
+    col2.metric("Δ EL",      fmt_money(totals.get("Δ EL",0),    currency))
+    col3.metric("Δ Inc",     fmt_money(totals.get("Δ Inc",0),   currency))
+    col4.metric("Δ Capital", fmt_money(totals.get("Δ Cap",0),   currency))
+    col5.metric("Liberación de Capital", fmt_money(totals.get("Lib Cap",0), currency))
 
-# --------------------------------- Layout UI ---------------------------------
-st.set_page_config(page_title="MVP Bancario – WDOF", layout="wide")
-st.title("MVP Bancario – Motor WDOF (Tarjetas)")
-
-clients, segments, bundle_dir, diags = load_bundle()
-
-# Sidebar: diagnóstico claro
-with st.sidebar:
-    st.header("Diagnóstico del Bundle")
-    st.write("Estado:", diags.get("status"))
-    st.write("BUNDLE_DIR:", diags["bundle_dir"])
-    st.write("clients_csv:", "✅" if diags["clients_exists"] else "❌", diags["clients_path"])
-    st.write("segments_csv:", "✅" if diags["segments_exists"] else "❌", diags["segments_path"])
-    st.write("Reglas capital: RW", RISK_WEIGHT, " | Ratio", CAPITAL_RATIO)
-
-# ---------------------------- Resumen Ejecutivo ------------------------------
 st.subheader("Resumen Ejecutivo (4 Aristas)")
-tot = kpi_totals(clients)
-show_kpi_row(tot)
+show_kpi_row(kpi_totals(clients))
+
+with st.expander("¿Qué miden estos KPIs y por qué nuestro método?"):
+    st.markdown(
+        """
+*Definiciones:*
+- *Δ Yield*: variación del ingreso financiero neto = (tasa efectiva – costo de fondeo) × EAD (optimizado – base).
+- *Δ EL (Default)*: variación de la Pérdida Esperada = PD × LGD × EAD (optimizado – base).
+- *Δ Inc (Incentivos)*: beneficio/costo incremental de campañas (si el bundle trae inc_*).  
+- *Δ Cap / Liberación de Capital*: cambio en capital económico aproximado = EAD × RW × ratio regulatorio.
+
+*¿Por qué nuestro método?*
+- Integra las 4 aristas en una sola vista coherente (no silos).
+- Permite stress “what-if” (tasa y EAD) con sensibilidad clara sobre Yield, Riesgo y Capital.
+- Evita optimizaciones “miopes” al exhibir *trade-offs* entre ingreso y riesgo/capital.
+- Está preparado para extenderse con funciones de incentivos (elasticidades y costos).
+        """
+    )
+
+# --------------------------------- Pestañas ----------------------------------
+tab_default, tab_yield, tab_inc, tab_cap = st.tabs(
+    ["Arista 1 — Default", "Arista 2 — Yield", "Arista 3 — Incentivos", "Arista 4 — Capital"]
+)
 
 # ---------------------------- Arista 1 — Default -----------------------------
-st.markdown("### Arista 1 — Default (Pérdida Esperada)")
-colA, colB = st.columns([1,2])
-with colA:
-    st.write("*Story*: Ajustes de exposición/tasa impactan la EL.")
-    st.write("*EL Base*:", fmt_clp(float(clients["EL_base"].sum())))
-    st.write("*EL Opt* :", fmt_clp(float(clients["EL_opt"].sum())))
-    st.write("*Δ EL*   :", fmt_clp(float(clients["EL_opt"].sum() - clients["EL_base"].sum())))
-with colB:
-    seg_d = segments[["segmento","EL_base","EL_opt"]].copy()
-    seg_d["Δ EL"] = seg_d["EL_opt"] - seg_d["EL_base"]
-    st.dataframe(seg_d, use_container_width=True)
-
-# ----------------------------- Arista 2 — Yield ------------------------------
-st.markdown("### Arista 2 — Yield (Ingreso Financiero Neto)")
-colA, colB = st.columns([1,2])
-with colA:
-    base_y = float(clients["ingreso_base"].sum())
-    opt_y  = float(clients["ingreso_opt"].sum())
-    st.write("*Yield Base*:", fmt_clp(base_y))
-    st.write("*Yield Opt* :", fmt_clp(opt_y))
-    st.write("*Δ Yield*   :", fmt_clp(opt_y - base_y))
-with colB:
-    seg_y = segments[["segmento","ingreso_base","ingreso_opt"]].copy()
-    seg_y["Δ ingreso"] = seg_y["ingreso_opt"] - seg_y["ingreso_base"]
-    st.dataframe(seg_y, use_container_width=True)
-
-# -------------------------- Arista 3 — Incentivos ----------------------------
-st.markdown("### Arista 3 — Incentivos")
-st.write("*Story*: Si el bundle incluye métricas de incentivos, se reflejan aquí. Por defecto Δ Inc = 0.")
-inc_cols = [c for c in clients.columns if c.startswith("inc_")]
-if inc_cols:
-    st.write("Columnas detectadas:", ", ".join(inc_cols))
-else:
-    st.info("No se detectaron columnas de incentivos (p.ej., inc_benefit_base/inc_benefit_opt).")
-
-# --------------------------- Arista 4 — Capital ------------------------------
-st.markdown("### Arista 4 — Capital Económico")
-colA, colB = st.columns([1,2])
-with colA:
-    cap_base = float(nz(clients["ead_baseline"]).sum() * RISK_WEIGHT * CAPITAL_RATIO)
-    cap_opt  = float(nz(clients["e_opt"]).sum()        * RISK_WEIGHT * CAPITAL_RATIO)
-    st.write("*Cap. Base*:", fmt_clp(cap_base))
-    st.write("*Cap. Opt* :", fmt_clp(cap_opt))
-    st.write("*Δ Cap*    :", fmt_clp(cap_opt - cap_base))
-with colB:
-    seg_cap = segments[["segmento","ead_base","ead_opt"]].copy()
-    seg_cap["Cap_base"] = seg_cap["ead_base"] * RISK_WEIGHT * CAPITAL_RATIO
-    seg_cap["Cap_opt"]  = seg_cap["ead_opt"]  * RISK_WEIGHT * CAPITAL_RATIO
-    seg_cap["Δ Cap"]    = seg_cap["Cap_opt"] - seg_cap["Cap_base"]
-    st.dataframe(seg_cap[["segmento","Cap_base","Cap_opt","Δ Cap"]], use_container_width=True)
-
-# -------------------------- Drill-down de clientes ---------------------------
-st.markdown("### Drill-down por cliente")
+with tab_default:
+    st.markdown("#### Pérdida Esperada (EL)")
+    c1, c2 = st.columns([1,2])
+    with c1:
+        st.write("*Story*: Ajustes de exposición/tasa impactan la EL (PD×LGD×EAD).")
+        st.write("*EL Base*:", fmt_money(float(clients["EL_base"].sum()), currency))
+        st.write("*EL Opt* :", fmt_money(float(clients["EL_opt"].sum()),  currency))
+        st.write("*Δ EL*   :", fmt_money(float(clients["EL_opt"].sum() - clients["EL_base"].sum()), currency))
+    with c2:
+        seg_d = segments[["segmento","EL_base","EL_opt"]].copy()

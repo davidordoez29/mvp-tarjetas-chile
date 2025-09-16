@@ -430,4 +430,4 @@ with colB:
     st.dataframe(seg_cap[["segmento","Cap_base","Cap_opt","Δ Cap"]], use_container_width=True)
 
 # -------------------------- Drill-down de clientes ---------------------------
-st.markdown("### Drill-do
+st.markdown("### Drill-down por cliente")

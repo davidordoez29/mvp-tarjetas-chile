@@ -19,12 +19,11 @@
 
 ## Guardrails
 
-| arista   | regla                                  |    valor_base |    valor_opt |   objetivo | OK    |
-|:---------|:---------------------------------------|--------------:|-------------:|-----------:|:------|
-| A1/A2    | EL_opt ≤ EL_base×EL_OBJ_FACTOR         |   7.74469e+07 |  9.68782e+07 |       0.9  | False |
-| A3       | Costo_incentivos ≤ ingreso_base×budget |   1.15022e+09 |  2.40859e+07 |       0.06 | True  |
-| A3       | ROI_port ≥ ROI_min                     | nan           | 20.0954      |       0.15 | True  |
-| A4       | Capital_opt ≤ Capital_base             |   3.64764e+08 |  4.74191e+08 |     nan    | False |
+| Métrica            | Base        | Optimizado   | Cambio Absoluto   | Cambio Relativo   |
+|:-------------------|:------------|:-------------|:------------------|:------------------|
+| Yield (Ingreso)    | $0          | $0           | $0                | -                 |
+| Expected Loss (EL) | $77.446.930 | $96.878.232  | $19.431.302       | 25.09%            |
+| Capital Requerido  | $0          | $474.190.847 | $474.190.847      | -                 |
 
 ## Limitaciones y validación
 

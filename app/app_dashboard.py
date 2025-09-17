@@ -1,4 +1,4 @@
-# app/app_dashboard.py — v2 (tabs con storytelling, formato numérico, guardrails en español)
+# app/app_dashboard.py — v3 (Executive Pitch + Guardrails derivados + formato numérico)
 
 import os, glob, json, math
 from pathlib import Path
@@ -7,11 +7,11 @@ import pandas as pd
 import streamlit as st
 
 # ==========================
-# Archivos requeridos (por arista)
+# Archivos requeridos (por arista / QA)
 # ==========================
 REQ_FILES = {
     # Arista 1 (Default)
-    "def_port": "default_portfolio.csv",
+    "def_port": "default_portfolio.csv",   # EAD/EL/Ingreso/Costos/Utilidad/PD_pond (actual/opt)
     "def_seg":  "default_segment.csv",
     "def_det":  "default_detail.csv",
     # Arista 2 (Yield)
@@ -150,7 +150,6 @@ def format_df_pct(df: pd.DataFrame, cols: list[str]):
             df2[c] = df2[c].apply(lambda v: fmt_pct_val(v))
     return df2
 
-# util: formatear tabla de guardrails y otras con mezcla de montos y %
 def format_df_mixed(df: pd.DataFrame, money_cols: list[str], pct_cols: list[str], moneda: str, usdclp: float):
     out = df.copy()
     for c in money_cols:
@@ -166,6 +165,7 @@ def format_df_mixed(df: pd.DataFrame, money_cols: list[str], pct_cols: list[str]
 # ==========================
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
+# Sidebar: bundle + moneda + guardrails
 st.sidebar.title("⚙️ Configuración")
 default_dir = autodetect_bundle()
 bundle_dir = st.sidebar.text_input(
@@ -178,6 +178,13 @@ moneda = st.sidebar.radio("Moneda a visualizar", ["CLP", "USD"], horizontal=True
 usdclp = float(st.sidebar.number_input("USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0))
 st.sidebar.caption("Aplica a todos los montos del dashboard.")
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("*Resguardos (umbrales de referencia)*")
+apr_floor = float(st.sidebar.number_input("APR mínima (floor)", min_value=0.0, max_value=1.0, value=0.05, step=0.01))
+apr_ceil  = float(st.sidebar.number_input("APR máxima (ceil)",  min_value=0.0, max_value=1.0, value=0.60, step=0.01))
+max_ead_shift_pct = float(st.sidebar.number_input("Máx. cambio EAD por segmento (%)", min_value=0.0, value=25.0, step=1.0))
+max_top1_conc_pct = float(st.sidebar.number_input("Máx. concentración Top-1 segmento (%)", min_value=0.0, value=40.0, step=1.0))
+
 if not bundle_dir:
     st.error("No encuentro el bundle. Genera el paquete y vuelve a cargar.")
     st.stop()
@@ -189,21 +196,99 @@ if missing:
 st.title("📊 MVP Bancario – Optimización en 4 Aristas")
 st.caption("Comparación *Actual vs. Optimizado* del portafolio con KPIs por arista. Valores en CLP/USD según selección.")
 
+# ==========================
+# Pestañas (incluye Análisis Ejecutivo y Glosario)
+# ==========================
 tabs = st.tabs([
+    "Análisis ejecutivo",
     "Arista 1 – Default/Impago",
     "Arista 2 – Yield/Pricing",
     "Arista 3 – Incentivos",
     "Arista 4 – Capital/Provisiones",
-    "Guardrails (resguardos)"
+    "Guardrails (resguardos)",
+    "Glosario"
 ])
 
-# ================
-# Arista 1 – Default
-# ================
+# ==========================
+# TAB 0 — Análisis ejecutivo (pitch)
+# ==========================
 with tabs[0]:
+    st.subheader("Análisis ejecutivo")
+    st.markdown("""
+*Resumen (qué resolvemos):*
+- *Default/Impago*: reducir EL reubicando EAD hacia perfiles más sanos.
+- *Yield/Pricing*: hallar la tasa (APR) que maximiza utilidad combinando precio y volumen.
+- *Incentivos*: asignar beneficios solo donde el ROI es positivo y significativo.
+- *Capital/Provisiones*: disminuir consumo de capital regulatorio y estabilizar provisiones.
+
+*Cómo leer los resultados* (Actual vs. Optimizado): cada arista muestra KPIs clave y su variación porcentual (VAR%), en la moneda elegida (CLP/USD).
+""")
+
+    # KPIs ejecutivos: tomar 1–3 métricas por arista si están disponibles
+    def g0(df, name): 
+        return (df[name].iloc[0] if isinstance(df, pd.DataFrame) and (name in df.columns) and not df.empty else np.nan)
+
+    # Arista 1
+    defp = dfs.get("def_port")
+    EAD_act = g0(defp,"EAD_actual");  EAD_opt = g0(defp,"EAD_optimizado")
+    EL_act  = g0(defp,"EL_actual");   EL_opt  = g0(defp,"EL_optimizado")
+    Uti_act = g0(defp,"Utilidad_actual"); Uti_opt = g0(defp,"Utilidad_optimizada")
+
+    # Arista 2
+    yldp = dfs.get("yld_port")
+    Y_ing_base = g0(yldp,"ingreso_base"); Y_ing_opt = g0(yldp,"ingreso_opt")
+    Y_uti_base = g0(yldp,"utilidad_base"); Y_uti_opt = g0(yldp,"utilidad_opt")
+
+    # Arista 3
+    inc_det = dfs.get("inc_det")
+    inc_cost_tot, inc_uplift_tot, inc_roi = np.nan, np.nan, np.nan
+    if isinstance(inc_det, pd.DataFrame) and not inc_det.empty:
+        cost_col = next((c for c in inc_det.columns if c.lower() in
+                        {"inc_cost","costo_incentivo","costo_incentivo_monto","costo_incentivo_total"}), None)
+        uplift_col = next((c for c in inc_det.columns if c.lower() in
+                        {"ingreso_uplift","uplift_ingreso","delta_ingreso","ingreso_incremental"}), None)
+        if cost_col is None: inc_det["_inc_cost"]=0.0; cost_col="inc_cost_"
+        if uplift_col is None: inc_det["_uplift"]=0.0; uplift_col="uplift_"
+        inc_cost_tot  = pd.to_numeric(inc_det[cost_col], errors="coerce").fillna(0).sum()
+        inc_uplift_tot= pd.to_numeric(inc_det[uplift_col], errors="coerce").fillna(0).sum()
+        inc_roi       = (inc_uplift_tot/inc_cost_tot) if inc_cost_tot>0 else np.nan
+
+    # Arista 4
+    capp = dfs.get("cap_port")
+    cap_base = g0(capp,"capital_req_base"); cap_opt = g0(capp,"capital_req_opt")
+    prov_base= g0(capp,"prov_base");        prov_opt= g0(capp,"prov_opt")
+
+    col1,col2 = st.columns(2)
+    with col1:
+        st.markdown("*Arista 1 — Default/Impago*")
+        kpi_row("EL (Pérdida Esperada)", EL_act, EL_opt, moneda, usdclp)
+        kpi_row("Utilidad", Uti_act, Uti_opt, moneda, usdclp)
+    with col2:
+        st.markdown("*Arista 2 — Yield/Pricing*")
+        kpi_row("Ingreso (Total)", Y_ing_base, Y_ing_opt, moneda, usdclp)
+        kpi_row("Utilidad (Total)", Y_uti_base, Y_uti_opt, moneda, usdclp)
+
+    col3,col4 = st.columns(2)
+    with col3:
+        st.markdown("*Arista 3 — Incentivos*")
+        kpi_row("Costo de Incentivos", inc_cost_tot, inc_cost_tot, moneda, usdclp)
+        kpi_row("Ingreso Incremental", inc_uplift_tot, inc_uplift_tot, moneda, usdclp)
+        st.metric("ROI (Ingreso/Costo)", fmt_pct_val((inc_roi*100) if pd.notna(inc_roi) else np.nan))
+    with col4:
+        st.markdown("*Arista 4 — Capital/Provisiones*")
+        kpi_row("Capital Requerido", cap_base, cap_opt, moneda, usdclp, "Proxy RW×K×EAD")
+        kpi_row("Provisiones",       prov_base, prov_opt, moneda, usdclp, "≈ EL")
+
+    st.markdown("---")
+    st.caption("Historia: reubicamos exposición, ajustamos pricing, focalizamos incentivos y aliviamos capital/provisiones dentro de resguardos.")
+
+# ================
+# TAB 1 — Arista 1 (igual que v2, con intro por arista)
+# ================
+with tabs[1]:
     st.subheader("Arista 1 — Default/Impago")
     st.markdown("""
-*¿Qué resolvemos aquí?* Reducimos la *pérdida esperada (EL)* reubicando exposición (EAD) hacia perfiles más sanos, sin sacrificar ingresos.
+*¿Qué resolvemos aquí?* Reducimos la *pérdida esperada (EL)* reubicando exposición (EAD) hacia perfiles más sanos, sin sacrificar ingresos.  
 *Historia del resultado:* Al mover exposición desde clientes con alta PD×LGD hacia perfiles medianos/sanos, el *EL baja* y la *utilidad sube*.
 """)
 
@@ -242,12 +327,12 @@ with tabs[0]:
         st.dataframe(seg_fmt, use_container_width=True)
 
 # ================
-# Arista 2 – Yield / Pricing
+# TAB 2 — Arista 2
 # ================
-with tabs[1]:
+with tabs[2]:
     st.subheader("Arista 2 — Yield/Pricing")
     st.markdown("""
-*¿Qué resolvemos aquí?* Buscamos la *tasa óptima (APR)* por segmento balanceando precio y volumen (elasticidad del EAD).
+*¿Qué resolvemos aquí?* Buscamos la *tasa óptima (APR)* por segmento balanceando precio y volumen (elasticidad del EAD).  
 *Historia del resultado:* Ajustando tasa por segmento, sube el *ingreso* y la *utilidad* sin disparar el riesgo.
 """)
 
@@ -282,32 +367,26 @@ with tabs[1]:
             st.dataframe(det_fmt, use_container_width=True)
 
 # ================
-# Arista 3 – Incentivos
+# TAB 3 — Arista 3
 # ================
-with tabs[2]:
+with tabs[3]:
     st.subheader("Arista 3 — Incentivos")
     st.markdown("""
-*¿Qué resolvemos aquí?* Asignamos beneficios solo donde el *ROI* (ingreso incremental/costo) es significativo.
+*¿Qué resolvemos aquí?* Asignamos beneficios solo donde el *ROI* (ingreso incremental/costo) es significativo.  
 *Historia del resultado:* Al focalizar, maximizamos *ingreso incremental* sin inflar el *costo de incentivos*.
 """)
 
     det  = dfs.get("inc_det")
     summ = dfs.get("inc_sum")
 
-    # Agregados de portafolio
     total_cost = np.nan; uplift = np.nan; roi = np.nan
-
     if isinstance(det, pd.DataFrame) and not det.empty:
-        # autodetección de columnas (flexible)
         cost_col = next((c for c in det.columns if c.lower() in
-                         {"inc_cost","costo_incentivo","costo_incentivo_monto","costo_incentivo_total"}), None)
+                        {"inc_cost","costo_incentivo","costo_incentivo_monto","costo_incentivo_total"}), None)
         uplift_col = next((c for c in det.columns if c.lower() in
-                           {"ingreso_uplift","uplift_ingreso","delta_ingreso","ingreso_incremental"}), None)
-        if cost_col is None:
-            det["_inc_cost"] = 0.0; cost_col = "inc_cost_"
-        if uplift_col is None:
-            det["_uplift"] = 0.0; uplift_col = "uplift_"
-
+                        {"ingreso_uplift","uplift_ingreso","delta_ingreso","ingreso_incremental"}), None)
+        if cost_col is None: det["_inc_cost"] = 0.0; cost_col="inc_cost_"
+        if uplift_col is None: det["_uplift"] = 0.0; uplift_col="uplift_"
         total_cost = pd.to_numeric(det[cost_col], errors="coerce").fillna(0).sum()
         uplift     = pd.to_numeric(det[uplift_col], errors="coerce").fillna(0).sum()
         roi        = (uplift/total_cost) if total_cost>0 else np.nan
@@ -321,19 +400,18 @@ with tabs[2]:
         money_cols = ["inc_cost_total","ingreso_uplift_total"]
         pct_cols = ["roi"]
         df = summ.copy()
-        # roi puede venir en proporción → convertir a %
         if "roi" in df.columns and df["roi"].dropna().abs().max() <= 2.0:
             df["roi"] = df["roi"]*100.0
         df_fmt = format_df_mixed(df, money_cols, pct_cols, moneda, usdclp)
         st.dataframe(df_fmt, use_container_width=True)
 
 # ================
-# Arista 4 – Capital / Provisiones
+# TAB 4 — Arista 4
 # ================
-with tabs[3]:
+with tabs[4]:
     st.subheader("Arista 4 — Capital/Provisiones")
     st.markdown("""
-*¿Qué resolvemos aquí?* Reducimos consumo de *capital regulatorio* (RWA×K) y *provisiones* (~EL) manteniendo ingresos saludables.
+*¿Qué resolvemos aquí?* Reducimos consumo de *capital regulatorio* (RWA×K) y *provisiones* (~EL) manteniendo ingresos saludables.  
 *Historia del resultado:* Reasignando EAD hacia perfiles con menor riesgo, la *provisión* y el *capital requerido* se estabilizan y pueden bajar.
 """)
 
@@ -385,17 +463,16 @@ with tabs[3]:
             st.info("No hay capital_detail.csv en el bundle.")
 
 # ================
-# Guardrails (Resguardos)
+# TAB 5 — Guardrails (resguardos) con derivación si faltan archivos
 # ================
-with tabs[4]:
+with tabs[5]:
     st.subheader("Guardrails (resguardos)")
     st.markdown("""
-*¿Qué son?* Reglas de resguardo que el modelo respeta para mantener límites de riesgo/negocio.  
-Ejemplos: *bandas de tasa (APR), límites de **EAD* por segmento, *cobertura* mínima, *concentración* máxima, etc.
+*¿Qué son?* Reglas de resguardo para mantener límites de riesgo/negocio: bandas de *APR, límites de **EAD* por segmento, *concentración* máxima, etc.  
+Los umbrales (referencia) se configuran en la barra lateral.
 """)
 
-    # Ejemplo: si en el bundle viene alguna tabla de guardrails (puedes escribirla desde el notebook)
-    # Si no existe, mostramos un ejemplo derivado (proxy) con columnas típicas:
+    # Si existen tablas explícitas, mostrarlas; si no, derivar de lo disponible
     gr_paths = [
         Path(bundle_dir)/"guardrails_portfolio.csv",
         Path(bundle_dir)/"guardrails_segment.csv"
@@ -415,7 +492,102 @@ Ejemplos: *bandas de tasa (APR), límites de **EAD* por segmento, *cobertura* m�
                 st.info(f"No pude leer {p.name}: {e}")
 
     if not showed:
-        st.info("No hay tablas de guardrails en el bundle. Puedes exportarlas desde el notebook (Celda 7.1 / 7.3).")
+        # Derivar guardrails de lo que haya en el bundle
+        # 1) Banda APR observada
+        apr_min_obs, apr_max_obs = np.nan, np.nan
+        ydet = dfs.get("yld_det")
+        if isinstance(ydet, pd.DataFrame) and not ydet.empty:
+            apr_cols = [c for c in ydet.columns if any(k in c.lower() for k in ["apr","r_opt","tasa","rate"])]
+            if apr_cols:
+                vals = pd.to_numeric(ydet[apr_cols].stack(), errors="coerce").dropna()
+                if not vals.empty:
+                    apr_min_obs = float(vals.min()); apr_max_obs = float(vals.max())
+
+        # 2) Cambio de EAD por segmento (|Δ| / EAD_base)
+        ead_shift_pct = np.nan
+        dseg = dfs.get("def_seg")
+        if isinstance(dseg, pd.DataFrame) and not dseg.empty and \
+           all(c in dseg.columns for c in ["EAD_actual","EAD_optimizado"]):
+            base_ead = pd.to_numeric(dseg["EAD_actual"], errors="coerce").fillna(0.0)
+            opt_ead  = pd.to_numeric(dseg["EAD_optimizado"], errors="coerce").fillna(0.0)
+            denom = base_ead.replace(0, np.nan)
+            rel = ((opt_ead - base_ead).abs() / denom * 100).replace([np.inf,-np.inf], np.nan).dropna()
+            if not rel.empty:
+                ead_shift_pct = float(rel.max())
+
+        # 3) Concentración Top-1 (share de EAD por segmento)
+        conc_top1 = np.nan
+        if isinstance(dseg, pd.DataFrame) and not dseg.empty and "EAD_optimizado" in dseg.columns:
+            tot = pd.to_numeric(dseg["EAD_optimizado"], errors="coerce").fillna(0.0).sum()
+            if tot > 0:
+                shares = pd.to_numeric(dseg["EAD_optimizado"], errors="coerce").fillna(0.0) / tot * 100.0
+                conc_top1 = float(shares.max())
+
+        # 4) PD ponderado no se dispare (proxy)
+        pdw_base = pdw_opt = np.nan
+        dport = dfs.get("def_port")
+        if isinstance(dport, pd.DataFrame) and not dport.empty:
+            if "PD_pond_actual" in dport.columns: pdw_base = float(pd.to_numeric(dport["PD_pond_actual"], errors="coerce").iloc[0])
+            if "PD_pond_optimizado" in dport.columns: pdw_opt = float(pd.to_numeric(dport["PD_pond_optimizado"], errors="coerce").iloc[0])
+
+        data = []
+        data.append({
+            "guardrail": "Banda APR",
+            "definición": "La tasa efectiva debe permanecer dentro del rango permitido",
+            "umbral": f"[{apr_floor:.2f}, {apr_ceil:.2f}]".replace(".", ","),
+            "observado_actual": "—",
+            "observado_optimizado": f"[{(apr_min_obs if not pd.isna(apr_min_obs) else '—')}, {(apr_max_obs if not pd.isna(apr_max_obs) else '—')}]",
+            "cumple": ("Sí" if (not pd.isna(apr_min_obs) and not pd.isna(apr_max_obs) and apr_min_obs>=apr_floor and apr_max_obs<=apr_ceil) else "N/A")
+        })
+        data.append({
+            "guardrail": "Máx. cambio EAD por segmento",
+            "definición": "|ΔEAD|/EAD_base por segmento, medido en %",
+            "umbral": f"≤ {max_ead_shift_pct:.2f}%".replace(".", ","),
+            "observado_actual": "—",
+            "observado_optimizado": (f"{ead_shift_pct:.2f}%" if not pd.isna(ead_shift_pct) else "—").replace(".", ","),
+            "cumple": ("Sí" if not pd.isna(ead_shift_pct) and ead_shift_pct <= max_ead_shift_pct else ("No" if not pd.isna(ead_shift_pct) else "N/A"))
+        })
+        data.append({
+            "guardrail": "Concentración Top-1 segmento",
+            "definición": "Participación del segmento más grande sobre EAD optimizado",
+            "umbral": f"≤ {max_top1_conc_pct:.2f}%".replace(".", ","),
+            "observado_actual": "—",
+            "observado_optimizado": (f"{conc_top1:.2f}%" if not pd.isna(conc_top1) else "—").replace(".", ","),
+            "cumple": ("Sí" if not pd.isna(conc_top1) and conc_top1 <= max_top1_conc_pct else ("No" if not pd.isna(conc_top1) else "N/A"))
+        })
+        data.append({
+            "guardrail": "PD ponderado (no sube)",
+            "definición": "PD promedio ponderado por EAD no debe aumentar tras la optimización",
+            "umbral": "PD_opt ≤ PD_base",
+            "observado_actual": (fmt_pct_val(pdw_base*100) if not pd.isna(pdw_base) else "—"),
+            "observado_optimizado": (fmt_pct_val(pdw_opt*100) if not pd.isna(pdw_opt) else "—"),
+            "cumple": ("Sí" if (not pd.isna(pdw_base) and not pd.isna(pdw_opt) and pdw_opt <= pdw_base) else "N/A")
+        })
+
+        df_gr = pd.DataFrame(data)
+        # columnas % ya están como string; no aplicar formato de moneda aquí
+        st.markdown("*Resguardos derivados (bundle actual)*")
+        st.dataframe(df_gr, use_container_width=True)
+
+# ================
+# TAB 6 — Glosario (Definiciones de KPIs)
+# ================
+with tabs[6]:
+    st.subheader("Glosario — Definiciones de KPIs")
+    st.markdown("""
+- *EAD (Exposure at Default):* Exposición del crédito cuando ocurre el default (monto en riesgo).
+- *PD (Probability of Default):* Probabilidad de incumplimiento de pago en el horizonte considerado.
+- *LGD (Loss Given Default):* Severidad de la pérdida dado el incumplimiento.
+- *EL (Expected Loss):* Pérdida esperada = *PD × LGD × EAD*.
+- *APR (Annual Percentage Rate):* Tasa efectiva anual.
+- *Ingreso:* Aproximación a *APR × EAD* (neto de costo financiero en comparativas específicas).
+- *Costos:* Suma de costos financieros (funding) y operativos.
+- *Utilidad:* *Ingreso − EL − Costos*.
+- *RWA (Risk-Weighted Assets):* Activos ponderados por riesgo (proxy estandarizado).
+- *Capital requerido:* *RWA × K* (K: ratio regulatorio).
+- *Provisiones:* Proxy contable proporcional a EL.
+- *ROI (Incentivos):* *Ingreso incremental / Costo de incentivos*.
+""")
 
 # ==========================
 # Footer

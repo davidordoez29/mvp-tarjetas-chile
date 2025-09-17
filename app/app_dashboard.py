@@ -1,359 +1,514 @@
-# app_dashboard.py — Dashboard Bancario Optimización WDOF (sin st.secrets)
-import os
-import streamlit as st
+# app/app_dashboard.py — versión robusta compatible con Bundle v2 (Celda 14 NUEVA)
+
+import os, glob, json, math
+from pathlib import Path
 import pandas as pd
 import numpy as np
-from pathlib import Path
+import streamlit as st
 
-# ==============================
-# 🔧 Utilidades
-# ==============================
-def format_number(x, is_pct=False, currency=None):
-    """
-    - Miles con punto, decimales con coma, 2 decimales.
-    - Si is_pct=True → agrega % (x viene como proporción 0-1).
-    - currency: "CLP" o "USD" (solo para mostrar etiqueta; formato es el mismo).
-    """
-    try:
-        if pd.isna(x):
-            return "-"
-        if is_pct:
-            return f"{x*100:,.2f}%".replace(",", "X").replace(".", ",").replace("X", ".")
-        else:
-            s = f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            return f"{s}" if currency is None else f"{s} {currency}"
-    except Exception:
-        return str(x)
+# ==========================
+# Archivos requeridos (nombres exactos del Bundle v2)
+# ==========================
+REQ_FILES = {
+    # Arista 1 (Default)
+    "def_port": "default_portfolio.csv",
+    "def_seg": "default_segment.csv",
+    "def_det": "default_detail.csv",
+    # Arista 2 (Yield)
+    "yld_port": "yield_portfolio.csv",
+    "yld_seg": "yield_segment.csv",
+    "yld_det": "yield_detail.csv",
+    "yld_curv": "yield_curve_segment.csv",
+    # Arista 3 (Incentivos)
+    "inc_det": "incentives_detail.csv",
+    "inc_sum": "incentives_diag_summary.csv",
+    "inc_sens": "incentives_sensitivity.csv",
+    # Arista 4 (Capital / Provisiones)
+    "cap_port": "capital_portfolio.csv",
+    "cap_seg": "capital_segment.csv",
+    "cap_det": "capital_detail.csv",
+    # Meta
+    "kpi_defs": "kpi_defs.json",
+    "seg_defs": "segment_defs.json",
+    "meta": "bundle_meta.json",
+}
 
-def to_float(s):
+CANDIDATE_DIRS = [
+    os.environ.get("BUNDLE_DIR", "").strip(),
+    "/content/mvp-tarjetas-chile/out/dashboard_bundle",
+    "/content/out/dashboard_bundle",
+    "./out/dashboard_bundle",
+    "./dashboard_bundle",
+]
+
+# ==========================
+# Utilidades generales
+# ==========================
+def _dir_ok(d: str) -> bool:
     try:
-        return float(s)
+        if not d or not os.path.isdir(d):
+            return False
+        hits = sum(os.path.exists(os.path.join(d, v)) for v in REQ_FILES.values())
+        # con 6+ archivos ya lo consideramos un bundle válido
+        return hits >= 6
     except Exception:
+        return False
+
+def autodetect_bundle() -> str | None:
+    # 1) candidates directos
+    for d in CANDIDATE_DIRS:
+        if _dir_ok(d):
+            return d
+    # 2) búsqueda recursiva en ubicaciones comunes
+    try:
+        bases = ["/content/mvp-tarjetas-chile", "/content", "."]
+        candidates = []
+        for base in bases:
+            for p in glob.glob(os.path.join(base, "**", "dashboard_bundle"), recursive=True):
+                if _dir_ok(p):
+                    candidates.append((p, os.path.getmtime(p)))
+        if candidates:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            return candidates[0][0]
+    except Exception:
+        pass
+    return None
+
+@st.cache_data(show_spinner=False)
+def _read_csv(path: str) -> pd.DataFrame | None:
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return None
+
+def load_bundle(bundle_dir: str):
+    dfs, missing = {}, []
+    for key, fname in REQ_FILES.items():
+        path = os.path.join(bundle_dir, fname)
+        if not os.path.exists(path):
+            missing.append(fname)
+            dfs[key] = None
+            continue
+        try:
+            if fname.endswith(".json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    dfs[key] = json.load(f)
+            else:
+                dfs[key] = _read_csv(path)
+                if dfs[key] is None:
+                    missing.append(f"{fname} (no se pudo leer)")
+        except Exception as e:
+            missing.append(f"{fname} (error: {e})")
+            dfs[key] = None
+    return dfs, missing
+
+# ==========================
+# Formato de números (CLP/USD)
+# ==========================
+def _to_display_currency(val: float, target: str, usdclp: float) -> float:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
         return np.nan
+    if target.upper() == "USD":
+        return float(val) / float(usdclp) if usdclp else np.nan
+    return float(val)
 
-def safe_sum(s):
-    try:
-        return float(pd.to_numeric(s, errors="coerce").fillna(0).sum())
-    except Exception:
-        return 0.0
+def fmt_money_val(val: float, target: str, usdclp: float) -> str:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return "—"
+    x = _to_display_currency(val, target, usdclp)
+    if x is None or (isinstance(x, float) and math.isnan(x)):
+        return "—"
+    neg = x < 0
+    x = abs(x)
+    ent = int(x)
+    dec = int(round((x - ent) * 100))
+    if dec == 100:
+        ent += 1
+        dec = 0
+    ent_str = f"{ent:,}".replace(",", ".")
+    return f"-{ent_str},{dec:02d}" if neg else f"{ent_str},{dec:02d}"
 
-def map_or_default(df, target, candidates, default_value=np.nan):
-    """
-    Si target no existe, intenta mapear desde 'candidates' (lista de nombres alternativos).
-    Si ninguno existe, crea 'target' con default_value.
-    """
-    if target in df.columns:
-        return df
-    for c in candidates:
-        if c in df.columns:
-            df = df.rename(columns={c: target})
-            return df
-    df[target] = default_value
-    return df
+def fmt_pct_val(val: float) -> str:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return "—"
+    return f"{val:.2f}%".replace(".", ",")
 
-def ensure_columns(clients, funding_cost=0.03, rw=0.75, cap_ratio=0.105):
-    """
-    Asegura presencia de columnas base/opt para cada arista.
-    Si faltan, intenta derivarlas o crea con ceros para que la UI no rompa.
-    """
-    # --- mapeos básicos que suele traer el bundle Celda14 ---
-    clients = map_or_default(clients, "EL_base", ["EL_base"])
-    clients = map_or_default(clients, "EL_opt",  ["EL_opt"])
+def var_pct(actual: float, opt: float) -> float | None:
+    if actual is None or pd.isna(actual) or actual == 0:
+        return None
+    return (opt - actual) / actual * 100.0
 
-    # Yield: preferir columnas ingreso_* y mapear a Yield_*
-    if ("Yield_base" not in clients.columns) and ("ingreso_base" in clients.columns):
-        clients = clients.rename(columns={"ingreso_base": "Yield_base"})
-    else:
-        clients = map_or_default(clients, "Yield_base", ["Yield_base"], default_value=0.0)
+def kpi_row(label: str, actual: float, opt: float, moneda: str, usdclp: float, help_text: str = ""):
+    c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
+    with c1:
+        st.metric(label=f"{label} – Actual", value=fmt_money_val(actual, moneda, usdclp))
+        if help_text:
+            st.caption(help_text)
+    with c2:
+        st.metric(label=f"{label} – Optimizado", value=fmt_money_val(opt, moneda, usdclp))
+    with c3:
+        vp = var_pct(actual, opt)
+        st.metric(label="VAR %", value=fmt_pct_val(vp) if vp is not None else "—")
 
-    if ("Yield_opt" not in clients.columns) and ("ingreso_opt" in clients.columns):
-        clients = clients.rename(columns={"ingreso_opt": "Yield_opt"})
-    else:
-        clients = map_or_default(clients, "Yield_opt", ["Yield_opt"], default_value=0.0)
+def kpi_row_pct(label: str, actual_pct: float, opt_pct: float, help_text: str = ""):
+    c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
+    with c1:
+        st.metric(label=f"{label} – Actual", value=fmt_pct_val(actual_pct))
+        if help_text:
+            st.caption(help_text)
+    with c2:
+        st.metric(label=f"{label} – Optimizado", value=fmt_pct_val(opt_pct))
+    with c3:
+        vp = var_pct(actual_pct, opt_pct)
+        st.metric(label="VAR %", value=fmt_pct_val(vp) if vp is not None else "—")
 
-    # Incentivos: costos y beneficios
-    # En Celda 14: inc_spend (costo optimizado), inc_benefit_base=0, inc_benefit_opt=(m_unit*dEAD - inc_spend)
-    if "Inc_cost_base" not in clients.columns:
-        clients["Inc_cost_base"] = 0.0
-    if "Inc_cost_opt" not in clients.columns:
-        if "inc_spend" in clients.columns:
-            clients["Inc_cost_opt"] = pd.to_numeric(clients["inc_spend"], errors="coerce").fillna(0.0)
-        else:
-            clients["Inc_cost_opt"] = 0.0
+def format_df_currency(df: pd.DataFrame, cols: list[str], moneda: str, usdclp: float):
+    df2 = df.copy()
+    for c in cols:
+        if c in df2.columns:
+            df2[c] = df2[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+    return df2
 
-    if "Inc_benefit_base" not in clients.columns:
-        if "inc_benefit_base" in clients.columns:
-            clients = clients.rename(columns={"inc_benefit_base": "Inc_benefit_base"})
-        else:
-            clients["Inc_benefit_base"] = 0.0
+def format_df_pct(df: pd.DataFrame, cols: list[str]):
+    df2 = df.copy()
+    for c in cols:
+        if c in df2.columns:
+            df2[c] = df2[c].apply(lambda v: fmt_pct_val(v))
+    return df2
 
-    if "Inc_benefit_opt" not in clients.columns:
-        if "inc_benefit_opt" in clients.columns:
-            clients = clients.rename(columns={"inc_benefit_opt": "Inc_benefit_opt"})
-        else:
-            clients["Inc_benefit_opt"] = 0.0
+def g0(df: pd.DataFrame | None, col: str):
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or col not in df.columns:
+        return np.nan
+    return df[col].iloc[0]
 
-    # Capital requerido: si no viene, derivar de EAD y parámetros
-    # Necesitamos ead_baseline (EAD_base) y e_opt (EAD_opt)
-    if "ead_baseline" not in clients.columns:
-        # intentar mapear desde alternativas
-        for alt in ["EAD_base", "ead_base", "exposure_base", "saldo_base"]:
-            if alt in clients.columns:
-                clients = clients.rename(columns={alt: "ead_baseline"})
-                break
-        if "ead_baseline" not in clients.columns:
-            clients["ead_baseline"] = 0.0
+# ==========================
+# App
+# ==========================
+st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
-    if "e_opt" not in clients.columns:
-        for alt in ["EAD_opt", "ead_opt", "exposure_opt", "saldo_opt"]:
-            if alt in clients.columns:
-                clients = clients.rename(columns={alt: "e_opt"})
-                break
-        if "e_opt" not in clients.columns:
-            clients["e_opt"] = pd.to_numeric(clients["ead_baseline"], errors="coerce").fillna(0.0)
+st.sidebar.title("⚙️ Configuración")
+default_dir = autodetect_bundle()
+bundle_dir = st.sidebar.text_input(
+    "📦 Ruta del bundle",
+    value=(default_dir or ""),
+    help="Ej: /content/mvp-tarjetas-chile/out/dashboard_bundle"
+).strip() or default_dir
 
-    if "Capital_req_base" not in clients.columns:
-        clients["Capital_req_base"] = pd.to_numeric(clients["ead_baseline"], errors="coerce").fillna(0.0) * rw * cap_ratio
-    if "Capital_req_opt" not in clients.columns:
-        clients["Capital_req_opt"]  = pd.to_numeric(clients["e_opt"], errors="coerce").fillna(0.0) * rw * cap_ratio
-
-    if "Capital_lib_base" not in clients.columns:
-        clients["Capital_lib_base"] = 0.0
-    if "Capital_lib_opt" not in clients.columns:
-        # Capital liberado = max(0, Capital_base - Capital_opt) a nivel cliente (acotado)
-        cap_base = pd.to_numeric(clients["Capital_req_base"], errors="coerce").fillna(0.0)
-        cap_opt  = pd.to_numeric(clients["Capital_req_opt"],  errors="coerce").fillna(0.0)
-        clients["Capital_lib_opt"] = (cap_base - cap_opt).clip(lower=0.0)
-
-    # PD/LGD/r y r_opt (para drilldown/consistencia)
-    clients = map_or_default(clients, "pd_score", ["pd_score","PD_base","pd"])
-    clients = map_or_default(clients, "lgd_pred", ["lgd_pred","LGD_base","lgd"])
-    clients = map_or_default(clients, "apr_efectiva", ["apr_efectiva","r_base","tasa","apr"])
-    clients = map_or_default(clients, "r_opt", ["r_opt","apr_opt"])
-
-    # Coerción a num
-    for c in ["EL_base","EL_opt","Yield_base","Yield_opt",
-              "Inc_cost_base","Inc_cost_opt","Inc_benefit_base","Inc_benefit_opt",
-              "Capital_req_base","Capital_req_opt","Capital_lib_base","Capital_lib_opt",
-              "ead_baseline","e_opt","pd_score","lgd_pred","apr_efectiva","r_opt"]:
-        if c in clients.columns:
-            clients[c] = pd.to_numeric(clients[c], errors="coerce").fillna(0.0)
-
-    return clients
-
-def aggregate_totals(clients):
-    """Devuelve totales (base/opt/delta) por arista."""
-    out = {}
-    out["Default"] = {
-        "base": safe_sum(clients["EL_base"]) if "EL_base" in clients.columns else 0.0,
-        "opt":  safe_sum(clients["EL_opt"])  if "EL_opt"  in clients.columns else 0.0
-    }
-    out["Yield"] = {
-        "base": safe_sum(clients["Yield_base"]) if "Yield_base" in clients.columns else 0.0,
-        "opt":  safe_sum(clients["Yield_opt"])  if "Yield_opt"  in clients.columns else 0.0
-    }
-    out["Incentivos"] = {
-        "base_cost": safe_sum(clients["Inc_cost_base"]) if "Inc_cost_base" in clients.columns else 0.0,
-        "opt_cost":  safe_sum(clients["Inc_cost_opt"])  if "Inc_cost_opt"  in clients.columns else 0.0,
-        "base_ben":  safe_sum(clients["Inc_benefit_base"]) if "Inc_benefit_base" in clients.columns else 0.0,
-        "opt_ben":   safe_sum(clients["Inc_benefit_opt"])  if "Inc_benefit_opt"  in clients.columns else 0.0,
-    }
-    out["Capital"] = {
-        "base": safe_sum(clients["Capital_req_base"]) if "Capital_req_base" in clients.columns else 0.0,
-        "opt":  safe_sum(clients["Capital_req_opt"])  if "Capital_req_opt"  in clients.columns else 0.0,
-        "lib_base": safe_sum(clients["Capital_lib_base"]) if "Capital_lib_base" in clients.columns else 0.0,
-        "lib_opt":  safe_sum(clients["Capital_lib_opt"])  if "Capital_lib_opt"  in clients.columns else 0.0,
-    }
-    return out
-
-# ==============================
-# 📂 Cargar bundle (sin st.secrets)
-# ==============================
-def load_bundle():
-    # 1) Variable de entorno (es la que seteamos en deploy)
-    env_bundle = os.environ.get("BUNDLE_DIR", "").strip()
-    if env_bundle:
-        bundle_dir = Path(env_bundle)
-    else:
-        # 2) ruta por defecto dentro del repo
-        bundle_dir = Path("/content/mvp-tarjetas-chile/out/dashboard_bundle")
-
-    clients_p = bundle_dir / "dashboard_bundle_clients.csv"
-    segs_p    = bundle_dir / "dashboard_bundle_segments.csv"
-
-    if not clients_p.exists() or not segs_p.exists():
-        st.error("❌ No se encontró el bundle (CSV). "
-                 "Asegúrate de ejecutar el pipeline y de sincronizar al repo (Celda 16).")
-        st.write("Ruta buscada:", str(bundle_dir))
-        return None, None
-
-    try:
-        clients = pd.read_csv(clients_p)
-        segs = pd.read_csv(segs_p)
-    except Exception as e:
-        st.error(f"❌ Error leyendo CSV del bundle: {e}")
-        return None, None
-
-    # Asegurar columnas mínimas y derivadas
-    clients = ensure_columns(clients)
-    return clients, segs
-
-# ==============================
-# ⚙️ Sidebar config
-# ==============================
-st.set_page_config(page_title="Dashboard Bancario WDOF", layout="wide")
-st.sidebar.header("⚙️ Configuración")
-currency = st.sidebar.radio("Moneda", ["CLP", "USD"], index=0)
-usd_to_clp = st.sidebar.number_input("Tipo de cambio USD → CLP", value=900, step=10, min_value=1)
-
-def convert_amount(x):
-    x = to_float(x)
-    if currency == "USD":
-        return x / max(usd_to_clp, 1)
-    return x
-
-# ==============================
-# 📊 Cargar datos
-# ==============================
-clients, segs = load_bundle()
-if clients is None:
+if not bundle_dir:
+    st.error("No se encontró el bundle. Genera el paquete (Celda 14 NUEVA) y vuelve a cargar.")
     st.stop()
 
-# ==============================
-# 🧭 Layout principal
-# ==============================
-st.title("📊 Dashboard Bancario – Optimización en 4 Aristas (WDOF)")
-st.caption("Simulación + Optimización de KPIs bancarios • Modelo matemático con guardrails de riesgo y capital.")
+dfs, missing = load_bundle(bundle_dir)
+if missing:
+    st.warning("Faltan archivos en el bundle (o nombres distintos):\n- " + "\n- ".join(missing))
 
-with st.sidebar:
-    st.markdown("### Diagnóstico Bundle")
-    bundle_dir = os.environ.get("BUNDLE_DIR", "/content/mvp-tarjetas-chile/out/dashboard_bundle")
-    st.write("BUNDLE_DIR:", bundle_dir)
-    st.write("Clientes:", len(clients))
-    cols_needed = ["EL_base","EL_opt","Yield_base","Yield_opt",
-                   "Inc_cost_base","Inc_cost_opt","Inc_benefit_base","Inc_benefit_opt",
-                   "Capital_req_base","Capital_req_opt","Capital_lib_base","Capital_lib_opt"]
-    missing = [c for c in cols_needed if c not in clients.columns]
-    if missing:
-        st.warning(f"⚠️ Faltan columnas en bundle: {missing}")
+moneda = st.sidebar.radio("Moneda a visualizar", ["CLP", "USD"], horizontal=True)
+usdclp = float(st.sidebar.number_input("USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0))
+st.sidebar.caption("Aplica a todos los montos del dashboard.")
 
-# ==============================
-# 📑 Pestañas por Arista
-# ==============================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Arista 1 – Default",
-    "Arista 2 – Yield",
+st.title("📊 MVP Bancario – Optimización en 4 Aristas")
+st.caption("Comparación **Actual vs. Optimizado** con KPIs clave por arista. Datos del bundle: " + (bundle_dir or "—"))
+
+tabs = st.tabs([
+    "Arista 1 – Default/Impago",
+    "Arista 2 – Yield/Pricing",
     "Arista 3 – Incentivos",
-    "Arista 4 – Capital"
+    "Arista 4 – Capital/Provisiones"
 ])
 
-totals = aggregate_totals(clients)
+with st.expander("¿Qué resuelve cada arista?"):
+    st.markdown("""
+**Arista 1 (Default/Impago):** Reduce la **Pérdida Esperada (EL)** administrando tasa y exposición (EAD) según riesgo, con guardrails.<br>
+**Arista 2 (Yield/Pricing):** Optimiza el **APR** para maximizar utilidad equilibrando precio y volumen (elasticidades).<br>
+**Arista 3 (Incentivos):** Asigna beneficios donde el **ROI** (ingreso incremental / costo) es mayor, con presupuesto y saturación.<br>
+**Arista 4 (Capital/Provisiones):** Minimiza consumo de **capital** y estabiliza **provisiones** (proxies) manteniendo el riesgo acotado.
+""", unsafe_allow_html=True)
 
-# ---------- Arista 1: Default ----------
-with tab1:
-    st.subheader("📉 Arista 1 — Default (Pérdidas Esperadas)")
-    base = totals["Default"]["base"]
-    opt  = totals["Default"]["opt"]
-    delta = opt - base
-    var = (delta / (abs(base) + 1e-9)) if base != 0 else 0.0
+# ================
+# Arista 1 – Default
+# ================
+with tabs[0]:
+    st.subheader("Arista 1 – Default/Impago")
+    st.markdown("""
+**KPIs:**
+- **EAD** (Exposure at Default)
+- **EL** (Expected Loss) = PD × LGD × EAD
+- **Ingreso** = (APR − costo_fondeo − costo_ops) × EAD
+- **Utilidad** = Ingreso − EL
+- **PD ponderado** por EAD
+""", unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Pérdidas (Base)", format_number(convert_amount(base), currency=currency))
-    col2.metric("Pérdidas (Opt)", format_number(convert_amount(opt), currency=currency),
-                delta=f"{var*100:.2f}%")
-    col3.metric("Variación", format_number(convert_amount(delta), currency=currency))
+    def_port = dfs.get("def_port")
+    def_seg = dfs.get("def_seg")
+    def_det = dfs.get("def_det")
 
-    with st.expander("ℹ️ Definición y método"):
-        st.markdown(
-            "- *KPI*: EL = PD × LGD × EAD.\n"
-            "- *Optimización*: Ajuste de tasa por riesgo (β) + guardrails para que EL no crezca.\n"
-            "- *Ventaja: Reducimos pérdidas esperadas **sin destruir* el margen ni disparar capital."
-        )
+    if def_port is None or (isinstance(def_port, pd.DataFrame) and def_port.empty):
+        st.error("No se encontró **default_portfolio.csv**.")
+    else:
+        EAD_act = g0(def_port, "EAD_actual"); EAD_opt = g0(def_port, "EAD_optimizado")
+        EL_act = g0(def_port, "EL_actual"); EL_opt = g0(def_port, "EL_optimizado")
+        Ing_act = g0(def_port, "Ingreso_actual"); Ing_opt = g0(def_port, "Ingreso_optimizado")
+        Cost_act= g0(def_port, "Costos_actual"); Cost_opt= g0(def_port, "Costos_optimizado")
+        Uti_act = g0(def_port, "Utilidad_actual");Uti_opt = g0(def_port, "Utilidad_optimizada")
+        PDw_act = g0(def_port, "PD_pond_actual"); PDw_opt = g0(def_port, "PD_pond_optimizado")
 
-# ---------- Arista 2: Yield ----------
-with tab2:
-    st.subheader("💰 Arista 2 — Yield (Margen Financiero)")
-    base = totals["Yield"]["base"]
-    opt  = totals["Yield"]["opt"]
-    delta = opt - base
-    var = (delta / (abs(base) + 1e-9)) if base != 0 else 0.0
+        kpi_row("EAD", EAD_act, EAD_opt, moneda, usdclp, "Exposición total")
+        kpi_row("EL (Pérdida Esperada)", EL_act, EL_opt, moneda, usdclp, "PD × LGD × EAD")
+        kpi_row("Ingreso", Ing_act, Ing_opt, moneda, usdclp, "APR neta × EAD")
+        kpi_row("Costos Totales", Cost_act, Cost_opt, moneda, usdclp, "Fondeo + Operación")
+        kpi_row("Utilidad", Uti_act, Uti_opt, moneda, usdclp, "Ingreso − EL")
+        if pd.notna(PDw_act) or pd.notna(PDw_opt):
+            kpi_row_pct("PD Ponderado (EAD)", PDw_act*100 if pd.notna(PDw_act) else np.nan,
+                        PDw_opt*100 if pd.notna(PDw_opt) else np.nan,
+                        "Promedio ponderado por EAD")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Margen (Base)", format_number(convert_amount(base), currency=currency))
-    col2.metric("Margen (Opt)", format_number(convert_amount(opt), currency=currency),
-                delta=f"{var*100:.2f}%")
-    col3.metric("Variación", format_number(convert_amount(delta), currency=currency))
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown("**Default por segmento**")
+        if isinstance(def_seg, pd.DataFrame) and not def_seg.empty:
+            df = def_seg.copy()
+            money_cols = [
+                "EAD_actual","EAD_optimizado","EL_actual","EL_optimizado",
+                "Ingreso_actual","Ingreso_optimizado","Costos_actual","Costos_optimizado",
+                "Utilidad_actual","Utilidad_optimizada"
+            ]
+            df = format_df_currency(df, money_cols, moneda, usdclp)
+            if "PD_pond_actual" in def_seg.columns:
+                df["PD_pond_actual"] = def_seg["PD_pond_actual"].apply(lambda v: fmt_pct_val(v*100))
+            if "PD_pond_optimizado" in def_seg.columns:
+                df["PD_pond_optimizado"] = def_seg["PD_pond_optimizado"].apply(lambda v: fmt_pct_val(v*100))
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay default_segment.csv en el bundle.")
+    with colB:
+        st.markdown("**Detalle (muestra)**")
+        if isinstance(def_det, pd.DataFrame) and not def_det.empty:
+            df = def_det.head(300).copy()
+            money_cols = [
+                "ead_baseline","ead_pricing","EL_actual","EL_optimizado",
+                "ingreso_actual","ingreso_optimizado","costos_actual","costos_optimizado",
+                "Utilidad_actual","Utilidad_optimizada"
+            ]
+            df = format_df_currency(df, money_cols, moneda, usdclp)
+            if "pd_base" in def_det.columns:
+                df["pd_base"] = def_det["pd_base"].apply(lambda v: fmt_pct_val(v*100))
+            if "pd_opt" in def_det.columns:
+                df["pd_opt"] = def_det["pd_opt"].apply(lambda v: fmt_pct_val(v*100))
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay default_detail.csv en el bundle.")
 
-    with st.expander("ℹ️ Definición y método"):
-        st.markdown(
-            "- *KPI*: (tasa efectiva – costo fondeo) × EAD.\n"
-            "- *Optimización*: Subimos precio en bajo riesgo, bajamos en alto riesgo.\n"
-            "- *Ventaja*: Aumenta el margen total manteniendo riesgo controlado."
-        )
+# ================
+# Arista 2 – Yield / Pricing
+# ================
+with tabs[1]:
+    st.subheader("Arista 2 – Yield/Pricing")
+    st.markdown("""
+**KPIs:**
+- **Ingreso/Utilidad (Total)**: pricing + volumen
+- **Ingreso/Utilidad (Solo Pricing)**: EAD fijado en baseline
+""", unsafe_allow_html=True)
 
-# ---------- Arista 3: Incentivos ----------
-with tab3:
-    st.subheader("🎁 Arista 3 — Incentivos (ROI)")
-    base_cost = totals["Incentivos"]["base_cost"]
-    opt_cost  = totals["Incentivos"]["opt_cost"]
-    base_ben  = totals["Incentivos"]["base_ben"]
-    opt_ben   = totals["Incentivos"]["opt_ben"]
+    yld_port = dfs.get("yld_port")
+    yld_seg = dfs.get("yld_seg")
+    yld_det = dfs.get("yld_det")
+    yld_curv = dfs.get("yld_curv")
 
-    base_roi = (base_ben - base_cost) / (base_cost + 1e-9) if base_cost > 0 else 0.0
-    opt_roi  = (opt_ben  - opt_cost)  / (opt_cost  + 1e-9) if opt_cost  > 0 else 0.0
+    if yld_port is None or (isinstance(yld_port, pd.DataFrame) and yld_port.empty):
+        st.error("No se encontró **yield_portfolio.csv**.")
+    else:
+        Ing_base = g0(yld_port,"ingreso_base"); Ing_iso = g0(yld_port,"ingreso_iso"); Ing_opt = g0(yld_port,"ingreso_opt")
+        Uti_base = g0(yld_port,"utilidad_base"); Uti_iso = g0(yld_port,"utilidad_iso"); Uti_opt = g0(yld_port,"utilidad_opt")
+        EL_base = g0(yld_port,"EL_baseline"); EL_iso = g0(yld_port,"el_iso"); EL_opt = g0(yld_port,"el_opt")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Costo (Base)", format_number(convert_amount(base_cost), currency=currency))
-    col2.metric("Costo (Opt)",  format_number(convert_amount(opt_cost),  currency=currency),
-                delta=f"{((opt_cost-base_cost)/(abs(base_cost)+1e-9))*100:.2f}%")
-    col3.metric("Δ Costo",      format_number(convert_amount(opt_cost - base_cost), currency=currency))
+        kpi_row("Ingreso (Total)", Ing_base, Ing_opt, moneda, usdclp, "Precio + Volumen")
+        kpi_row("Ingreso (Solo Pricing)", Ing_base, Ing_iso, moneda, usdclp, "EAD fijado en baseline")
+        kpi_row("Utilidad (Total)", Uti_base, Uti_opt, moneda, usdclp)
+        kpi_row("Utilidad (Solo Pricing)", Uti_base, Uti_iso, moneda, usdclp)
+        kpi_row("EL", EL_base, EL_opt, moneda, usdclp, "Pérdida esperada total")
 
-    col4, col5, col6 = st.columns(3)
-    col4.metric("Beneficio (Base)", format_number(convert_amount(base_ben), currency=currency))
-    col5.metric("Beneficio (Opt)",  format_number(convert_amount(opt_ben),  currency=currency),
-                delta=f"{((opt_ben-base_ben)/(abs(base_ben)+1e-9))*100:.2f}%")
-    col6.metric("Δ Beneficio",      format_number(convert_amount(opt_ben - base_ben), currency=currency))
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown("**Yield por segmento**")
+        if isinstance(yld_seg, pd.DataFrame) and not yld_seg.empty:
+            df = format_df_currency(
+                yld_seg.copy(),
+                ["ingreso_base","ingreso_iso","ingreso_opt","utilidad_base","utilidad_iso","utilidad_opt","EL_baseline","el_iso","el_opt"],
+                moneda, usdclp
+            )
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay yield_segment.csv en el bundle.")
+    with colB:
+        st.markdown("**Detalle (muestra)**")
+        if isinstance(yld_det, pd.DataFrame) and not yld_det.empty:
+            df = format_df_currency(
+                yld_det.head(300).copy(),
+                ["ead_baseline","ead_pricing","ingreso_base","ingreso_iso","ingreso_opt","utilidad_base","utilidad_iso","utilidad_opt","EL_baseline","el_iso","el_opt"],
+                moneda, usdclp
+            )
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay yield_detail.csv en el bundle.")
 
-    col7, col8 = st.columns(2)
-    col7.metric("ROI (Base)", format_number(base_roi, is_pct=True))
-    col8.metric("ROI (Opt)",  format_number(opt_roi,  is_pct=True),
-                delta=f"{(opt_roi-base_roi)*100:.2f}%")
+    st.markdown("**Curva r → ingreso por segmento**")
+    if isinstance(yld_curv, pd.DataFrame) and not yld_curv.empty and {"segmento","r_grid","ingreso_grid"}.issubset(yld_curv.columns):
+        # Mostrar tabla simple (sin gráficos para evitar dependencias)
+        df = yld_curv.copy()
+        df["ingreso_grid_fmt"] = df["ingreso_grid"].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+        st.dataframe(df[["segmento","r_grid","ingreso_grid_fmt"]], use_container_width=True)
+    else:
+        st.info("No hay yield_curve_segment.csv en el bundle.")
 
-    with st.expander("ℹ️ Definición y método"):
-        st.markdown(
-            "- *KPI*: Beneficio neto incremental de campañas vs su costo.\n"
-            "- *Optimización: Asignación **greedy* con elasticidad (ε) y costo (k) bajo un presupuesto B.\n"
-            "- *Ventaja: Invertimos **solo* donde el CLP rinde más en margen neto, penalizando consumo de capital si aplica."
-        )
+# ================
+# Arista 3 – Incentivos
+# ================
+with tabs[2]:
+    st.subheader("Arista 3 – Incentivos")
+    st.markdown("""
+**KPIs (portafolio):**
+- **Costo de Incentivos** (CLP/USD)
+- **Ingreso Incremental**
+- **ROI** = Ingreso Incremental / Costo
+""", unsafe_allow_html=True)
 
-# ---------- Arista 4: Capital ----------
-with tab4:
-    st.subheader("🏦 Arista 4 — Capital (uso eficiente)")
-    base = totals["Capital"]["base"]
-    opt  = totals["Capital"]["opt"]
-    delta = opt - base
-    var = (delta / (abs(base) + 1e-9)) if base != 0 else 0.0
+    inc_det = dfs.get("inc_det")
+    inc_sum = dfs.get("inc_sum")
+    inc_sens = dfs.get("inc_sens")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Requerido (Base)", format_number(convert_amount(base), currency=currency))
-    col2.metric("Requerido (Opt)",  format_number(convert_amount(opt), currency=currency),
-                delta=f"{var*100:.2f}%")
-    col3.metric("Δ Requerido",      format_number(convert_amount(delta), currency=currency))
+    total_cost = np.nan
+    uplift = np.nan
+    roi = np.nan
 
-    base_lib = totals["Capital"]["lib_base"]
-    opt_lib  = totals["Capital"]["lib_opt"]
-    dlib = opt_lib - base_lib
-    varlib = (dlib / (abs(base_lib) + 1e-9)) if base_lib != 0 else 0.0
+    # Si hay resumen, úsalo para KPIs (fila TOTAL); si no, derive de detalle
+    if isinstance(inc_sum, pd.DataFrame) and not inc_sum.empty:
+        summ = inc_sum.copy()
+        # fila TOTAL si existe
+        row_total = None
+        if "segmento" in summ.columns:
+            mask = summ["segmento"].astype(str).str.upper().eq("TOTAL")
+            if mask.any():
+                row_total = summ[mask].iloc[0].to_dict()
+        if row_total is None:
+            # sumar todo
+            tot_cost = pd.to_numeric(summ.get("inc_cost_total", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+            tot_upl = pd.to_numeric(summ.get("ingreso_uplift_total", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+            total_cost, uplift = float(tot_cost), float(tot_upl)
+            roi = (uplift/total_cost) if total_cost>0 else np.nan
+        else:
+            total_cost = float(pd.to_numeric(pd.Series([row_total.get("inc_cost_total", np.nan)]), errors="coerce").fillna(0).iloc[0])
+            uplift = float(pd.to_numeric(pd.Series([row_total.get("ingreso_uplift_total", np.nan)]), errors="coerce").fillna(0).iloc[0])
+            roi = float(row_total.get("roi", np.nan)) if not pd.isna(row_total.get("roi", np.nan)) else ((uplift/total_cost) if total_cost>0 else np.nan)
+    elif isinstance(inc_det, pd.DataFrame) and not inc_det.empty:
+        # derivar de detalle
+        if "inc_cost" in inc_det.columns:
+            total_cost = pd.to_numeric(inc_det["inc_cost"], errors="coerce").fillna(0).sum()
+        else:
+            total_cost = 0.0
+        if "ingreso_uplift" in inc_det.columns:
+            uplift = pd.to_numeric(inc_det["ingreso_uplift"], errors="coerce").fillna(0).sum()
+        else:
+            uplift = 0.0
+        roi = (uplift/total_cost) if total_cost>0 else np.nan
 
-    col4, col5, col6 = st.columns(3)
-    col4.metric("Liberado (Base)", format_number(convert_amount(base_lib), currency=currency))
-    col5.metric("Liberado (Opt)",  format_number(convert_amount(opt_lib),  currency=currency),
-                delta=f"{varlib*100:.2f}%")
-    col6.metric("Δ Liberado",      format_number(convert_amount(dlib),     currency=currency))
+    # KPIs portafolio
+    kpi_row("Costo de Incentivos", total_cost, total_cost, moneda, usdclp, "Suma de costos de beneficios")
+    kpi_row("Ingreso Incremental", uplift, uplift, moneda, usdclp, "Suma de incrementos estimados")
+    st.metric("ROI (Ingreso/Costo)", fmt_pct_val(roi*100 if pd.notna(roi) else np.nan))
 
-    with st.expander("ℹ️ Definición y método"):
-        st.markdown(
-            "- *KPI*: Capital = EAD × RW × Ratio (aprox estándar).\n"
-            "- *Optimización*: Guardrails de capital (no crece vs base) y repricing/EAD para liberar.\n"
-            "- *Ventaja: Más capacidad de crecimiento **con el mismo* capital regulatorio."
-        )
+    # Tablas
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown("**Resumen por segmento**")
+        if isinstance(inc_sum, pd.DataFrame) and not inc_sum.empty:
+            df = inc_sum.copy()
+            # Formatos
+            for c in ["inc_cost_total","ingreso_uplift_total"]:
+                if c in df.columns:
+                    df[c] = df[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            if "roi" in df.columns:
+                df["roi"] = df["roi"].apply(lambda x: fmt_pct_val(x*100 if pd.notna(x) else np.nan))
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay incentives_diag_summary.csv en el bundle.")
+    with colB:
+        st.markdown("**Detalle (muestra)**")
+        if isinstance(inc_det, pd.DataFrame) and not inc_det.empty:
+            df = inc_det.copy()
+            money_cols = [c for c in df.columns if any(k in c.lower() for k in ["cost","uplift","monto","ingreso"]) ]
+            df = format_df_currency(df, money_cols, moneda, usdclp)
+            if "roi_individual" in df.columns:
+                df["roi_individual"] = df["roi_individual"].apply(lambda x: fmt_pct_val(x*100 if pd.notna(x) else np.nan))
+            st.dataframe(df.head(300), use_container_width=True)
+        else:
+            st.info("No hay incentives_detail.csv en el bundle.")
+
+    with st.expander("Sensibilidades (parámetros usados en la corrida)"):
+        if isinstance(inc_sens, pd.DataFrame) and not inc_sens.empty:
+            st.dataframe(inc_sens, use_container_width=True)
+        else:
+            st.info("No hay incentives_sensitivity.csv en el bundle.")
+
+# ================
+# Arista 4 – Capital / Provisiones
+# ================
+with tabs[3]:
+    st.subheader("Arista 4 – Capital / Provisiones")
+    st.markdown("""
+**KPIs:**
+- **Capital Requerido** (proxy RW×K×EAD)
+- **Provisiones** ~ EL
+- **Liberación** = Actual − Optimizado
+""", unsafe_allow_html=True)
+
+    cap_port = dfs.get("cap_port")
+    cap_seg = dfs.get("cap_seg")
+    cap_det = dfs.get("cap_det")
+
+    if cap_port is None or (isinstance(cap_port, pd.DataFrame) and cap_port.empty):
+        st.error("No se encontró **capital_portfolio.csv**.")
+    else:
+        cap_base = g0(cap_port, "capital_req_base")
+        cap_opt = g0(cap_port, "capital_req_opt")
+        prov_base= g0(cap_port, "prov_base")
+        prov_opt = g0(cap_port, "prov_opt")
+
+        kpi_row("Capital Requerido", cap_base, cap_opt, moneda, usdclp, "Proxy RW×K×EAD")
+        kpi_row("Provisiones", prov_base, prov_opt, moneda, usdclp, "≈ EL")
+
+        lib_cap  = cap_base - cap_opt  if pd.notna(cap_base) and pd.notna(cap_opt)  else np.nan
+        lib_prov = prov_base - prov_opt if pd.notna(prov_base) and pd.notna(prov_opt) else np.nan
+
+        colX, colY = st.columns(2)
+        with colX: st.metric("Liberación de Capital", fmt_money_val(lib_cap, moneda, usdclp))
+        with colY: st.metric("Liberación de Provisiones", fmt_money_val(lib_prov, moneda, usdclp))
+
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown("*Capital por segmento*")
+        if isinstance(cap_seg, pd.DataFrame) and not cap_seg.empty:
+            df = format_df_currency(
+                cap_seg.copy(),
+                ["capital_req_base","capital_req_opt","prov_base","prov_opt"],
+                moneda, usdclp
+            )
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay capital_segment.csv en el bundle.")
+    with colB:
+        st.markdown("*Detalle (muestra)*")
+        if isinstance(cap_det, pd.DataFrame) and not cap_det.empty:
+            df = format_df_currency(
+                cap_det.head(300).copy(),
+                ["capital_req_base","capital_req_opt","prov_base","prov_opt","ead_baseline","e_opt"],
+                moneda, usdclp
+            )
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay capital_detail.csv en el bundle.")
+
+# ==========================
+# Footer
+# ==========================
+st.markdown("---")
+st.caption("© MVP Bancario — Motor de Optimización (4 aristas integradas).")

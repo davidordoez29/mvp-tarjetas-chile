@@ -1,12 +1,12 @@
-# app/app_dashboard.py — storytelling por arista (compat v2.0 + contrato)
-import os, glob, json, math, re
+# app/app_dashboard.py — storytelling por arista (compat v2.0 + contrato + fixes KPIs)
+import os, json, math, re
 import pandas as pd
 import numpy as np
 import streamlit as st
 from pathlib import Path
 
 # ==========================
-# Archivos requeridos (nombres "clásicos" que usa la UI)
+# Archivos requeridos por la UI (nombres "clásicos")
 # ==========================
 REQ_FILES = {
     "def_port": "default_portfolio.csv",
@@ -26,7 +26,7 @@ REQ_FILES = {
     "guard_seg":  "guardrails_segment.csv",
 }
 
-# Fallbacks compatibles con el Notebook v2.0 (aristaX_*.csv)
+# Fallbacks compatibles con los exports del notebook v2.0
 FALLBACK_FILES = {
     "def_port": ["arista1_portfolio.csv"],
     "def_seg":  ["arista1_segment.csv"],
@@ -38,16 +38,16 @@ FALLBACK_FILES = {
     "cap_port": ["arista4_portfolio.csv"],
     "cap_seg":  ["arista4_segment.csv"],
     "cap_det":  ["arista4_detail.csv"],
-    # guardrails ya calzan nombres
+    # guardrails ya calzan
 }
 
-# Detección de bundle: añadimos rutas del notebook v2.0
+# Detección de bundle (rutas típicas de notebook / bundle)
 CANDIDATE_DIRS = [
     os.environ.get("BUNDLE_DIR", "").strip(),
-    os.environ.get("WDOF_BUNDLE_DIR", "").strip(),   # opcional: symlink/var de entorno
-    "/content/out",                                   # outputs sueltos
-    "/content/out/dashboard_bundle",                  # si empaquetas aquí
-    "/content/bundle",                                # raíz bundles
+    os.environ.get("WDOF_BUNDLE_DIR", "").strip(),
+    "/content/out",
+    "/content/bundle",
+    "/content/out/dashboard_bundle",
     "./out/dashboard_bundle",
     "./dashboard_bundle",
 ]
@@ -57,27 +57,24 @@ CANDIDATE_DIRS = [
 # ==========================
 def _dir_ok(d: str) -> bool:
     try:
-        if not d or not os.path.isdir(d): 
+        if not d or not os.path.isdir(d):
             return False
-        # con 6 archivos ya damos por válido
         hits = 0
         for v in REQ_FILES.values():
             if os.path.exists(os.path.join(d, v)):
                 hits += 1
-        # también aceptamos si hay guardrails + kpis + aristas nuevas
         hits += sum(os.path.exists(os.path.join(d, f)) for lst in FALLBACK_FILES.values() for f in lst)
         return hits >= 6
     except Exception:
         return False
 
 def autodetect_bundle() -> str | None:
-    # Preferencia: si hay contrato, priorizar su folder raíz
+    # Si hay contrato por variable de entorno, úsalo como pista
     contract_env = os.environ.get("DASHBOARD_CONTRACT", "").strip()
     if contract_env and Path(contract_env).exists():
         try:
             with open(contract_env, "r", encoding="utf-8") as f:
                 contract = json.load(f)
-            # si paths del contrato existen, tomamos su carpeta base
             any_path = next(iter(contract.get("paths", {}).values()), None)
             if any_path and Path(any_path).exists():
                 base = str(Path(any_path).parent)
@@ -85,21 +82,19 @@ def autodetect_bundle() -> str | None:
                     return base
         except Exception:
             pass
-
-    # Si no, intentamos dirs candidatos
+    # Si no, explora las carpetas candidatas
     for d in CANDIDATE_DIRS:
-        if _dir_ok(d): 
+        if _dir_ok(d):
             return d
     return None
 
 def _read_csv(path: str):
     try:
         return pd.read_csv(path)
-    except Exception as e:
+    except Exception:
         return None
 
 def _resolve_path(bundle_dir: str, fname: str, fallbacks: list[str]) -> str | None:
-    """Devuelve el primer path existente entre fname y sus fallbacks."""
     cand = [fname] + (fallbacks or [])
     for c in cand:
         p = os.path.join(bundle_dir, c)
@@ -108,7 +103,6 @@ def _resolve_path(bundle_dir: str, fname: str, fallbacks: list[str]) -> str | No
     return None
 
 def load_bundle(bundle_dir: str):
-    """Carga dataframes según REQ_FILES, con fallbacks v2.0. Devuelve dfs, missing."""
     dfs, missing = {}, []
     for key, fname in REQ_FILES.items():
         fpath = _resolve_path(bundle_dir, fname, FALLBACK_FILES.get(key, []))
@@ -123,89 +117,78 @@ def load_bundle(bundle_dir: str):
     return dfs, missing
 
 # ==========================
-# Normalizadores (mapear columnas a lo que UI espera)
+# Normalizadores (mapear columnas a lo que la UI espera)
 # ==========================
 def _num(x):
     return pd.to_numeric(x, errors="coerce")
 
 def norm_default_port(df: pd.DataFrame) -> pd.DataFrame:
-    """Soporta 'default_portfolio.csv' y 'arista1_portfolio.csv'."""
-    if df is None or df.empty:
-        return df
-    df2 = df.copy()
-    cols = {c.lower(): c for c in df2.columns}
-
-    # Arista1 v2.0: ead_base, ead_final, EL_base, EL_final, apr_base_w, apr_final_w
-    def pick(name):
-        return cols.get(name.lower())
-
-    if pick("EAD_actual") not in cols and pick("ead_base"):
-        df2["EAD_actual"] = _num(df2[pick("ead_base")])
-    if pick("EAD_optimizado") not in cols and pick("ead_final"):
-        df2["EAD_optimizado"] = _num(df2[pick("ead_final")])
-    if pick("EL_actual") not in cols and pick("EL_base"):
-        df2["EL_actual"] = _num(df2[pick("EL_base")])
-    if pick("EL_optimizado") not in cols and pick("EL_final"):
-        df2["EL_optimizado"] = _num(df2[pick("EL_final")])
-
-    # Utilidad: si no existe, aproximamos como Ingreso - EL, usando APR ponderado
-    for side in [("actual","base"), ("optimizado","final")]:
-        ui_name = f"Utilidad_{side[0]}"
-        if ui_name not in df2.columns:
-            r = pick(f"apr_{side[1]}_w")
-            e = pick(f"ead_{side[1]}")
-            el= pick(f"EL_{side[1]}")
-            if r and e:
-                ingreso = _num(df2[r]) * _num(df2[e])
-                util = ingreso - (_num(df2[el]) if el in df2.columns else 0.0)
-                df2[ui_name] = ingreso if el not in df2.columns else util
-
-    # PD ponderado: si no existe, lo dejamos NaN (la UI es robusta)
-    return df2
-
-def norm_yield_port(df: pd.DataFrame) -> pd.DataFrame:
-    """Soporta 'yield_portfolio.csv' y 'arista2_portfolio.csv'."""
+    """Soporta default_portfolio.csv y arista1_portfolio.csv; completa Ingreso/Utilidad si faltan."""
     if df is None or df.empty:
         return df
     df2 = df.copy()
     cols = {c.lower(): c for c in df2.columns}
     def pick(name): return cols.get(name.lower())
 
-    # v2.0: income_base, income_final
-    if pick("ingreso_base") not in cols and pick("income_base"):
+    EAD_ACT = pick("EAD_actual") or pick("ead_base")
+    EAD_OPT = pick("EAD_optimizado") or pick("ead_final")
+    EL_ACT  = pick("EL_actual") or pick("EL_base")
+    EL_OPT  = pick("EL_optimizado") or pick("EL_final")
+    APR_ACT = pick("apr_base_w")
+    APR_OPT = pick("apr_final_w")
+
+    if "EAD_actual" not in df2.columns and EAD_ACT: df2["EAD_actual"] = _num(df2[EAD_ACT])
+    if "EAD_optimizado" not in df2.columns and EAD_OPT: df2["EAD_optimizado"] = _num(df2[EAD_OPT])
+    if "EL_actual" not in df2.columns and EL_ACT: df2["EL_actual"] = _num(df2[EL_ACT])
+    if "EL_optimizado" not in df2.columns and EL_OPT: df2["EL_optimizado"] = _num(df2[EL_OPT])
+
+    if APR_ACT and "EAD_actual" in df2.columns and "ingreso_actual" not in df2.columns:
+        df2["ingreso_actual"] = _num(df2[APR_ACT]) * _num(df2["EAD_actual"])
+    if APR_OPT and "EAD_optimizado" in df2.columns and "ingreso_optimizado" not in df2.columns:
+        df2["ingreso_optimizado"] = _num(df2[APR_OPT]) * _num(df2["EAD_optimizado"])
+
+    if "Utilidad_actual" not in df2.columns and "ingreso_actual" in df2.columns:
+        df2["Utilidad_actual"] = df2["ingreso_actual"] - (df2["EL_actual"] if "EL_actual" in df2.columns else 0.0)
+    if "Utilidad_optimizada" not in df2.columns and "ingreso_optimizado" in df2.columns:
+        df2["Utilidad_optimizada"] = df2["ingreso_optimizado"] - (df2["EL_optimizado"] if "EL_optimizado" in df2.columns else 0.0)
+
+    return df2
+
+def norm_yield_port(df: pd.DataFrame) -> pd.DataFrame:
+    """Soporta yield_portfolio.csv y arista2_portfolio.csv."""
+    if df is None or df.empty:
+        return df
+    df2 = df.copy()
+    cols = {c.lower(): c for c in df2.columns}
+    def pick(name): return cols.get(name.lower())
+
+    if "ingreso_base" not in df2.columns and pick("income_base"):
         df2["ingreso_base"] = _num(df2[pick("income_base")])
-    if pick("ingreso_opt") not in cols and pick("income_final"):
+    if "ingreso_opt" not in df2.columns and pick("income_final"):
         df2["ingreso_opt"] = _num(df2[pick("income_final")])
 
-    # utilidad_* si existen en alguna variante
     for base, alt in [("utilidad_base","profit_base"), ("utilidad_opt","profit_final")]:
         if base not in df2.columns and pick(alt):
             df2[base] = _num(df2[pick(alt)])
     return df2
 
 def norm_cap_port(df: pd.DataFrame) -> pd.DataFrame:
-    """Soporta 'capital_portfolio.csv' y 'arista4_portfolio.csv'."""
+    """Soporta capital_portfolio.csv y arista4_portfolio.csv."""
     if df is None or df.empty:
         return df
     df2 = df.copy()
     cols = {c.lower(): c for c in df2.columns}
     def pick(name): return cols.get(name.lower())
 
-    # Mapas comunes:
-    # capital_req_base/opt  ~ K_base/K_final  ó campos equivalentes
-    if "capital_req_base" not in df2.columns:
-        c = pick("K_base")
-        if c: df2["capital_req_base"] = _num(df2[c])
-    if "capital_req_opt" not in df2.columns:
-        c = pick("K_final")
-        if c: df2["capital_req_opt"] = _num(df2[c])
+    if "capital_req_base" not in df2.columns and pick("K_base"):
+        df2["capital_req_base"] = _num(df2[pick("K_base")])
+    if "capital_req_opt" not in df2.columns and pick("K_final"):
+        df2["capital_req_opt"] = _num(df2[pick("K_final")])
 
-    if "prov_base" not in df2.columns:
-        c = pick("prov_base")
-        if c: df2["prov_base"] = _num(df2[c])
-    if "prov_opt" not in df2.columns:
-        c = pick("prov_final")
-        if c: df2["prov_opt"] = _num(df2[c])
+    if "prov_base" not in df2.columns and pick("prov_base"):
+        df2["prov_base"] = _num(df2[pick("prov_base")])
+    if "prov_opt" not in df2.columns and pick("prov_final"):
+        df2["prov_opt"] = _num(df2[pick("prov_final")])
     return df2
 
 # ==========================
@@ -249,7 +232,7 @@ def _to_float_or_nan(v):
 def fmt_pct_val(val):
     if isinstance(val, str):
         s = val.strip()
-        if s.endswith("%"):
+        if s.endswith("%"):  # ya viene formateado
             return s.replace(".", ",")
         if not _num_like.match(s.replace(",", ".")):
             return s
@@ -315,23 +298,14 @@ bundle_dir = st.sidebar.text_input(
     help="Ej: /content/out o /content/bundle/bundle_<RUN_ID>"
 ).strip() or default_dir
 
-contract_hint = st.sidebar.text_input(
-    "📄 (Opcional) dashboard_contract.json",
-    value=os.environ.get("DASHBOARD_CONTRACT","").strip()
-).strip()
+# Mostrar input de contrato solo si existe variable de entorno
+contract_env = os.environ.get("DASHBOARD_CONTRACT","").strip()
+if contract_env:
+    st.sidebar.text_input("📄 (Opcional) dashboard_contract.json", value=contract_env)
 
 if not bundle_dir:
     st.error("No encuentro el bundle. Genera el paquete en el notebook y vuelve a cargar.")
     st.stop()
-
-# Cargar contrato si se indicó, para hints (no obligatorio)
-if contract_hint and Path(contract_hint).exists():
-    try:
-        with open(contract_hint, "r", encoding="utf-8") as f:
-            _contract = json.load(f)
-        st.sidebar.caption("Contrato cargado ✓")
-    except Exception as _:
-        st.sidebar.caption("No pude leer el contrato (opcional).")
 
 dfs, missing = load_bundle(bundle_dir)
 if missing:
@@ -378,7 +352,9 @@ with tabs[0]:
         kpi_row("EAD", g0(port,"EAD_actual"), g0(port,"EAD_optimizado"), moneda, usdclp)
         kpi_row("EL (Pérdida Esperada)", g0(port,"EL_actual"), g0(port,"EL_optimizado"), moneda, usdclp)
         kpi_row("Utilidad", g0(port,"Utilidad_actual"), g0(port,"Utilidad_optimizada"), moneda, usdclp)
-        # PD ponderado si existe
+        # Si hay APR ponderado y PD ponderado, muéstralos
+        if "apr_base_w" in port.columns and "apr_final_w" in port.columns:
+            kpi_row_pct("APR Ponderado", port["apr_base_w"].iloc[0]*100, port["apr_final_w"].iloc[0]*100)
         if "PD_pond_actual" in port.columns and "PD_pond_optimizado" in port.columns:
             kpi_row_pct("PD Ponderado", port["PD_pond_actual"].iloc[0]*100, port["PD_pond_optimizado"].iloc[0]*100)
 
@@ -395,7 +371,7 @@ with tabs[1]:
     st.markdown("""
     - Ingreso total: Flujo de intereses ajustado por volumen.  
     - Utilidad total: Ingreso – EL – Costos.  
-    - Ingreso/Utilidad aislado: Solo efecto precio, manteniendo EAD fijo.
+    - APR ponderado: precio promedio ponderado por EAD.  
     """)
 
     st.markdown("### Análisis Ejecutivo")
@@ -405,10 +381,20 @@ with tabs[1]:
     if port is not None and not port.empty:
         def g0(df, name): return df[name].iloc[0] if name in df.columns else np.nan
         kpi_row("Ingreso Total", g0(port,"ingreso_base"), g0(port,"ingreso_opt"), moneda, usdclp)
-        # Utilidad total si está disponible
         ub = g0(port, "utilidad_base"); uo = g0(port, "utilidad_opt")
         if not (np.isnan(ub) and np.isnan(uo)):
             kpi_row("Utilidad Total", ub, uo, moneda, usdclp)
+        # KPIs adicionales
+        a_b = g0(port, "apr_base_w"); a_o = g0(port, "apr_final_w")
+        if not (np.isnan(a_b) and np.isnan(a_o)):
+            kpi_row_pct("APR Ponderado", a_b*100, a_o*100)
+        # EAD desde Arista 1 (si está)
+        def_port = norm_default_port(dfs.get("def_port"))
+        if def_port is not None and not def_port.empty:
+            eb = def_port.get("EAD_actual", pd.Series([np.nan])).iloc[0]
+            eo = def_port.get("EAD_optimizado", pd.Series([np.nan])).iloc[0]
+            if not (np.isnan(eb) and np.isnan(eo)):
+                kpi_row("EAD", eb, eo, moneda, usdclp)
 
 # ================
 # Arista 3 – Incentivos
@@ -430,15 +416,25 @@ with tabs[2]:
     st.success("Es como fertilizar solo las plantas que realmente responden: cada peso en incentivos genera retorno multiplicado.")
 
     det = dfs.get("inc_det"); summ = dfs.get("inc_sum")
-    if det is not None and not det.empty:
+    if summ is not None and not summ.empty:
+        def s0(c): return pd.to_numeric(summ[c], errors="coerce").iloc[0] if c in summ.columns else np.nan
+        costo   = s0("total_incentivo")
+        uplift  = s0("ingreso_incremental")
+        roi_avg = s0("roi_promedio")
+        kpi_row("Costo de Incentivos", costo, costo, moneda, usdclp)
+        kpi_row("Ingreso Incremental", uplift, uplift, moneda, usdclp)
+        st.metric("ROI (promedio)", fmt_pct_val(roi_avg*100 if pd.notna(roi_avg) else np.nan))
+    elif det is not None and not det.empty:
         cost_cols = [c for c in det.columns if "cost" in c.lower()]
-        up_cols   = [c for c in det.columns if "uplift" in c.lower() or "ingreso_incremental" in c.lower() or "delta_ingreso" in c.lower()]
-        cost = pd.to_numeric(det[cost_cols].sum(axis=1), errors="coerce").fillna(0).sum() if cost_cols else 0.0
+        up_cols   = [c for c in det.columns if "uplift" in c.lower() or "ingreso" in c.lower()]
+        costo  = pd.to_numeric(det[cost_cols].sum(axis=1), errors="coerce").fillna(0).sum() if cost_cols else 0.0
         uplift = pd.to_numeric(det[up_cols].sum(axis=1), errors="coerce").fillna(0).sum() if up_cols else 0.0
-        roi = uplift/cost if cost>0 else np.nan
-        kpi_row("Costo de Incentivos", cost, cost, moneda, usdclp)
+        roi = uplift/costo if costo>0 else np.nan
+        kpi_row("Costo de Incentivos", costo, costo, moneda, usdclp)
         kpi_row("Ingreso Incremental", uplift, uplift, moneda, usdclp)
         st.metric("ROI", fmt_pct_val(roi*100 if pd.notna(roi) else np.nan))
+    else:
+        st.info("No hay datos de incentivos en el bundle.")
 
 # ================
 # Arista 4 – Capital / Provisiones
@@ -486,7 +482,6 @@ with tabs[4]:
 
     if gseg is not None and not gseg.empty:
         gseg_fmt = gseg.copy()
-        # Si hay 'concentration_share' u otras proporciones
         for c in gseg_fmt.columns:
             if "share" in c.lower() or "pct" in c.lower():
                 gseg_fmt[c] = gseg_fmt[c].apply(fmt_pct_val)

@@ -326,37 +326,89 @@ tabs = st.tabs([
 ])
 
 # ================
-# Arista 1 – Default
+# Arista 1 – Default/Impago (dos escenarios en una sola pestaña)
 # ================
 with tabs[0]:
     st.header("Arista 1 – Default/Impago")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Reducimos la pérdida esperada (EL) reasignando la exposición a segmentos menos riesgosos, sin frenar el negocio.")
+    st.markdown("Reducimos la pérdida esperada (EL) reasignando la exposición a segmentos menos riesgosos, sin frenar el negocio. *Esta arista NO toca tasas (APR)*.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-    - EAD: Exposición en riesgo.  
+    - EAD: Exposición en riesgo (monto sobre el que se calcula pérdida e ingreso).  
     - EL: Pérdida Esperada = PD × LGD × EAD.  
-    - Ingreso: APR × EAD.  
-    - Utilidad: Ingreso – EL – Costos.  
+    - Ingreso: r_base × EAD (no cambiamos r_base aquí).  
+    - Utilidad: Ingreso – EL (sin costos operativos en esta vista).  
     - PD ponderado: Probabilidad de default promedio, ponderada por EAD.
     """)
 
-    st.markdown("### Análisis Ejecutivo")
-    st.success("La optimización disminuye la pérdida esperada y aumenta utilidad redirigiendo exposición a clientes más sanos.")
+    # ----- utilidades locales
+    def g0(df, name):
+        return df[name].iloc[0] if (df is not None and not df.empty and name in df.columns) else np.nan
 
-    port = norm_default_port(dfs.get("def_port"))
-    if port is not None and not port.empty:
-        def g0(df, col): return df[col].iloc[0] if col in df.columns else np.nan
-        kpi_row("EAD", g0(port,"EAD_actual"), g0(port,"EAD_optimizado"), moneda, usdclp)
-        kpi_row("EL (Pérdida Esperada)", g0(port,"EL_actual"), g0(port,"EL_optimizado"), moneda, usdclp)
-        kpi_row("Utilidad", g0(port,"Utilidad_actual"), g0(port,"Utilidad_optimizada"), moneda, usdclp)
-        # Si hay APR ponderado y PD ponderado, muéstralos
-        if "apr_base_w" in port.columns and "apr_final_w" in port.columns:
-            kpi_row_pct("APR Ponderado", port["apr_base_w"].iloc[0]*100, port["apr_final_w"].iloc[0]*100)
-        if "PD_pond_actual" in port.columns and "PD_pond_optimizado" in port.columns:
-            kpi_row_pct("PD Ponderado", port["PD_pond_actual"].iloc[0]*100, port["PD_pond_optimizado"].iloc[0]*100)
+    def render_kpis_block(title, port_df):
+        st.subheader(title)
+        if port_df is None or port_df.empty:
+            st.info("No se encontraron datos para este escenario en el bundle.")
+            return
+        c_ead_a  = g0(port_df,"EAD_actual");       c_ead_o  = g0(port_df,"EAD_optimizado")
+        c_el_a   = g0(port_df,"EL_actual");        c_el_o   = g0(port_df,"EL_optimizado")
+        c_inc_a  = g0(port_df,"Ingreso_actual");   c_inc_o  = g0(port_df,"Ingreso_optimizado")
+        c_ut_a   = g0(port_df,"Utilidad_actual");  c_ut_o   = g0(port_df,"Utilidad_optimizada")
+        c_pd_a   = g0(port_df,"PD_pond_actual");   c_pd_o   = g0(port_df,"PD_pond_optimizado")
+
+        kpi_row("EAD", c_ead_a, c_ead_o, moneda, usdclp, help_text="Exposición total (debe mantenerse ≈ constante).")
+        kpi_row("EL (Pérdida Esperada)", c_el_a, c_el_o, moneda, usdclp, help_text="Objetivo: EL optimizado menor (−5% a −20%).")
+        kpi_row("Ingreso", c_inc_a, c_inc_o, moneda, usdclp)
+        kpi_row("Utilidad", c_ut_a, c_ut_o, moneda, usdclp, help_text="Ingreso – EL (sin costos).")
+        if pd.notna(c_pd_a) and pd.notna(c_pd_o):
+            # PD viene en [0,1]; lo mostramos en %
+            kpi_row_pct("PD Ponderado", c_pd_a*100.0, c_pd_o*100.0)
+
+    # ----- Análisis ejecutivo
+    st.markdown("### Análisis Ejecutivo")
+    st.success("Primero mostramos un escenario *Conservador* (movimientos acotados de EAD) y debajo un escenario *Potenciado* (mayor eficiencia, siempre respetando guardrails). Ambos cumplen IFRS9 y Basilea III.")
+
+    # ----- KPIs: Conservador (default_portfolio.csv)
+    port_cons = dfs.get("def_port")
+    render_kpis_block("Escenario Conservador", port_cons)
+
+    st.divider()
+
+    # ----- KPIs: Potenciado (default_portfolio_agresivo.csv)
+    port_poten = dfs.get("def_port_aggr")
+    render_kpis_block("Escenario Potenciado", port_poten)
+
+    # ----- Tablas opcionales (expandibles)
+    with st.expander("Ver tablas de detalle (Conservador)"):
+        seg = dfs.get("def_seg"); det = dfs.get("def_det")
+        if seg is not None and not seg.empty:
+            st.markdown("*Segmento (Conservador)*")
+            # Formateos suaves: moneda para montos y % para PD
+            seg_show = seg.copy()
+            for c in ["EAD_actual","EAD_optimizado","EL_actual","EL_optimizado","Ingreso_actual","Ingreso_optimizado","Utilidad_actual","Utilidad_optimizada"]:
+                if c in seg_show.columns: seg_show[c] = seg_show[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            if "PD_pond_actual" in seg_show.columns: seg_show["PD_pond_actual"] = seg_show["PD_pond_actual"].apply(lambda v: fmt_pct_val((v if pd.isna(v) else v*100)))
+            if "PD_pond_optimizado" in seg_show.columns: seg_show["PD_pond_optimizado"] = seg_show["PD_pond_optimizado"].apply(lambda v: fmt_pct_val((v if pd.isna(v) else v*100)))
+            st.dataframe(seg_show, use_container_width=True)
+        if det is not None and not det.empty:
+            st.markdown("*Detalle clientes (Conservador)*")
+            st.dataframe(det.head(2000), use_container_width=True)
+
+    with st.expander("Ver tablas de detalle (Potenciado)"):
+        seg_a = dfs.get("def_seg_aggr"); det_a = dfs.get("def_det_aggr")
+        if seg_a is not None and not seg_a.empty:
+            st.markdown("*Segmento (Potenciado)*")
+            seg_show = seg_a.copy()
+            for c in ["EAD_actual","EAD_optimizado","EL_actual","EL_optimizado","Ingreso_actual","Ingreso_optimizado","Utilidad_actual","Utilidad_optimizada"]:
+                if c in seg_show.columns: seg_show[c] = seg_show[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            if "PD_pond_actual" in seg_show.columns: seg_show["PD_pond_actual"] = seg_show["PD_pond_actual"].apply(lambda v: fmt_pct_val((v if pd.isna(v) else v*100)))
+            if "PD_pond_optimizado" in seg_show.columns: seg_show["PD_pond_optimizado"] = seg_show["PD_pond_optimizado"].apply(lambda v: fmt_pct_val((v if pd.isna(v) else v*100)))
+            st.dataframe(seg_show, use_container_width=True)
+        if det_a is not None and not det_a.empty:
+            st.markdown("*Detalle clientes (Potenciado)*")
+            st.dataframe(det_a.head(2000), use_container_width=True)
 
 # ================
 # Arista 2 – Yield / Pricing

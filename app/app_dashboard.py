@@ -6,9 +6,10 @@ import streamlit as st
 from pathlib import Path
 
 # ==========================
-# Archivos requeridos por la UI (nombres "clásicos")
+# Archivos requeridos (por escenario)
 # ==========================
-REQ_FILES = {
+# Claves lógicas -> base filename (sin sufijo)
+REQ_FILES_BASE = {
     "def_port": "default_portfolio.csv",
     "def_seg":  "default_segment.csv",
     "def_det":  "default_detail.csv",
@@ -22,98 +23,73 @@ REQ_FILES = {
     "cap_port": "capital_portfolio.csv",
     "cap_seg":  "capital_segment.csv",
     "cap_det":  "capital_detail.csv",
+    # Estos son comunes (sin sufijo por escenario)
     "guard_port": "guardrails_portfolio.csv",
     "guard_seg":  "guardrails_segment.csv",
+    "kpis":       "kpis_unificados.csv",
 }
 
-# Fallbacks compatibles con los exports del notebook v2.0
-FALLBACK_FILES = {
-    "def_port": ["arista1_portfolio.csv"],
-    "def_seg":  ["arista1_segment.csv"],
-    "def_det":  ["arista1_detail.csv"],
-    "yld_port": ["arista2_portfolio.csv"],
-    "yld_seg":  ["arista2_segment.csv"],
-    "yld_det":  ["arista2_detail.csv"],
-    "inc_det":  ["arista3_detail.csv"],
-    "cap_port": ["arista4_portfolio.csv"],
-    "cap_seg":  ["arista4_segment.csv"],
-    "cap_det":  ["arista4_detail.csv"],
-    # guardrails ya calzan
-}
+SUFFIX = {"Conservador": "", "Potenciado": "_agresivo"}
 
-# Detección de bundle (rutas típicas de notebook / bundle)
+def files_for_scenario(scenario: str) -> dict[str, str]:
+    """Devuelve {key: filename} aplicando sufijo por escenario donde corresponda."""
+    suf = SUFFIX.get(scenario, "")
+    files = {}
+    for k, base in REQ_FILES_BASE.items():
+        if k in {"guard_port", "guard_seg", "kpis"}:
+            files[k] = base  # sin sufijo
+        else:
+            # inserta sufijo antes de .csv si aplica
+            if suf:
+                stem, ext = base.rsplit(".", 1)
+                files[k] = f"{stem}{suf}.{ext}"
+            else:
+                files[k] = base
+    return files
+
 CANDIDATE_DIRS = [
     os.environ.get("BUNDLE_DIR", "").strip(),
-    os.environ.get("WDOF_BUNDLE_DIR", "").strip(),
-    "/content/out",
-    "/content/bundle",
     "/content/out/dashboard_bundle",
     "./out/dashboard_bundle",
     "./dashboard_bundle",
 ]
 
 # ==========================
-# Utilidades de carga
+# Utilidades de carga (escenario-aware)
 # ==========================
 def _dir_ok(d: str) -> bool:
+    """Carpeta válida si contiene ~6 archivos del escenario conservador o potenciado."""
     try:
-        if not d or not os.path.isdir(d):
+        if not d or not os.path.isdir(d): 
             return False
-        hits = 0
-        for v in REQ_FILES.values():
-            if os.path.exists(os.path.join(d, v)):
-                hits += 1
-        hits += sum(os.path.exists(os.path.join(d, f)) for lst in FALLBACK_FILES.values() for f in lst)
-        return hits >= 6
+        # prueba conservador
+        req_cons = files_for_scenario("Conservador")
+        hits_cons = sum(os.path.exists(os.path.join(d, v)) for v in req_cons.values())
+        # prueba potenciado
+        req_pot = files_for_scenario("Potenciado")
+        hits_pot = sum(os.path.exists(os.path.join(d, v)) for v in req_pot.values())
+        return max(hits_cons, hits_pot) >= 6
     except Exception:
         return False
 
 def autodetect_bundle() -> str | None:
-    # Si hay contrato por variable de entorno, úsalo como pista
-    contract_env = os.environ.get("DASHBOARD_CONTRACT", "").strip()
-    if contract_env and Path(contract_env).exists():
-        try:
-            with open(contract_env, "r", encoding="utf-8") as f:
-                contract = json.load(f)
-            any_path = next(iter(contract.get("paths", {}).values()), None)
-            if any_path and Path(any_path).exists():
-                base = str(Path(any_path).parent)
-                if _dir_ok(base):
-                    return base
-        except Exception:
-            pass
-    # Si no, explora las carpetas candidatas
     for d in CANDIDATE_DIRS:
-        if _dir_ok(d):
+        if _dir_ok(d): 
             return d
     return None
 
-def _read_csv(path: str):
-    try:
-        return pd.read_csv(path)
-    except Exception:
-        return None
-
-def _resolve_path(bundle_dir: str, fname: str, fallbacks: list[str]) -> str | None:
-    cand = [fname] + (fallbacks or [])
-    for c in cand:
-        p = os.path.join(bundle_dir, c)
-        if os.path.exists(p):
-            return p
-    return None
-
-def load_bundle(bundle_dir: str):
+def load_bundle(bundle_dir: str, scenario: str):
+    req = files_for_scenario(scenario)
     dfs, missing = {}, []
-    for key, fname in REQ_FILES.items():
-        fpath = _resolve_path(bundle_dir, fname, FALLBACK_FILES.get(key, []))
-        if not fpath:
-            missing.append(fname + " (no encontrado)")
+    for key, fname in req.items():
+        path = os.path.join(bundle_dir, fname)
+        if not os.path.exists(path):
+            missing.append(fname); dfs[key] = None; continue
+        try:
+            dfs[key] = pd.read_csv(path)
+        except Exception as e:
+            missing.append(f"{fname} (error: {e})")
             dfs[key] = None
-            continue
-        df = _read_csv(fpath)
-        if df is None:
-            missing.append(fname + f" (error al leer: {fpath})")
-        dfs[key] = df
     return dfs, missing
 
 # ==========================
@@ -291,25 +267,25 @@ def format_df_pct(df: pd.DataFrame, cols: list[str]):
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
 st.sidebar.title("⚙️ Configuración")
+
+# Selección de escenario (Conservador vs Potenciado)
+scenario = st.sidebar.radio("Escenario", ["Conservador", "Potenciado"], horizontal=True)
+
+# Path del bundle
 default_dir = autodetect_bundle()
 bundle_dir = st.sidebar.text_input(
     "📦 Ruta del bundle",
     value=(default_dir or ""),
-    help="Ej: /content/out o /content/bundle/bundle_<RUN_ID>"
+    help="Ej: /content/out/dashboard_bundle"
 ).strip() or default_dir
-
-# Mostrar input de contrato solo si existe variable de entorno
-contract_env = os.environ.get("DASHBOARD_CONTRACT","").strip()
-if contract_env:
-    st.sidebar.text_input("📄 (Opcional) dashboard_contract.json", value=contract_env)
 
 if not bundle_dir:
     st.error("No encuentro el bundle. Genera el paquete en el notebook y vuelve a cargar.")
     st.stop()
 
-dfs, missing = load_bundle(bundle_dir)
+dfs, missing = load_bundle(bundle_dir, scenario)
 if missing:
-    st.warning("Faltan archivos en el bundle:\n- " + "\n- ".join(missing))
+    st.warning(f"Faltan archivos en el bundle (escenario *{scenario}*):\n- " + "\n- ".join(missing))
 
 moneda = st.sidebar.radio("Moneda a visualizar", ["CLP", "USD"], horizontal=True)
 usdclp = float(st.sidebar.number_input("USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0))

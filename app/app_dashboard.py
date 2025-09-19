@@ -411,134 +411,205 @@ with tabs[0]:
             st.dataframe(det_a.head(2000), use_container_width=True)
 
 # ================
-# Arista 2 – Yield / Pricing
+# Arista 2 – Yield / Pricing (Conservador + Potenciado en una pestaña)
 # ================
 with tabs[1]:
     st.header("Arista 2 – Yield/Pricing")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Encontramos la tasa (APR) óptima que maximiza utilidad equilibrando precio y volumen.")
+    st.markdown("Encontramos la tasa (APR) óptima que maximiza utilidad equilibrando precio y volumen, *respetando bandas/caps* y elasticidades razonables.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-    - Ingreso total: Flujo de intereses ajustado por volumen.  
-    - Utilidad total: Ingreso – EL – Costos.  
-    - APR ponderado: precio promedio ponderado por EAD.  
+    - Ingreso total: r × EAD.  
+    - Utilidad total: Ingreso – EL.  
+    - EAD in/out: EAD de entrada (post Arista 1) vs EAD tras pricing (elasticidad).  
     """)
 
-    st.markdown("### Análisis Ejecutivo")
-    st.success("Ajustamos el precio como un tendero que encuentra el punto ideal: si cobra demasiado, pierde clientes; si cobra poco, gana volumen pero no rentabilidad.")
+    def g0(df, name):
+        return df[name].iloc[0] if (df is not None and not df.empty and name in df.columns) else np.nan
 
-    port = norm_yield_port(dfs.get("yld_port"))
-    if port is not None and not port.empty:
-        def g0(df, name): return df[name].iloc[0] if name in df.columns else np.nan
-        kpi_row("Ingreso Total", g0(port,"ingreso_base"), g0(port,"ingreso_opt"), moneda, usdclp)
-        ub = g0(port, "utilidad_base"); uo = g0(port, "utilidad_opt")
-        if not (np.isnan(ub) and np.isnan(uo)):
-            kpi_row("Utilidad Total", ub, uo, moneda, usdclp)
-        # KPIs adicionales
-        a_b = g0(port, "apr_base_w"); a_o = g0(port, "apr_final_w")
-        if not (np.isnan(a_b) and np.isnan(a_o)):
-            kpi_row_pct("APR Ponderado", a_b*100, a_o*100)
-        # EAD desde Arista 1 (si está)
-        def_port = norm_default_port(dfs.get("def_port"))
-        if def_port is not None and not def_port.empty:
-            eb = def_port.get("EAD_actual", pd.Series([np.nan])).iloc[0]
-            eo = def_port.get("EAD_optimizado", pd.Series([np.nan])).iloc[0]
-            if not (np.isnan(eb) and np.isnan(eo)):
-                kpi_row("EAD", eb, eo, moneda, usdclp)
+    def render_yield_block(title, port_df):
+        st.subheader(title)
+        if port_df is None or port_df.empty:
+            st.info("No se encontraron datos para este escenario en el bundle.")
+            return
+        inc_b = g0(port_df,"ingreso_base"); inc_o = g0(port_df,"ingreso_opt")
+        utl_b = g0(port_df,"utilidad_base"); utl_o = g0(port_df,"utilidad_opt")
+        ead_in = g0(port_df,"EAD_in"); ead_out = g0(port_df,"EAD_out")
+
+        kpi_row("Ingreso Total", inc_b, inc_o, moneda, usdclp)
+        kpi_row("Utilidad Total", utl_b, utl_o, moneda, usdclp)
+        kpi_row("EAD (in → out)", ead_in, ead_out, moneda, usdclp, help_text="EAD_in: post Arista 1 | EAD_out: tras pricing (elasticidad)")
+
+    st.markdown("### Análisis Ejecutivo")
+    st.success("Arriba mostramos el escenario *Conservador* (ajustes moderados de APR y baja elasticidad). Abajo el escenario *Potenciado* (ajustes más amplios pero *siempre dentro de caps*).")
+
+    # Conservador
+    render_yield_block("Escenario Conservador", dfs.get("yld_port"))
+    st.divider()
+    # Potenciado
+    render_yield_block("Escenario Potenciado", dfs.get("yld_port_aggr"))
+
+    # Tablas expandibles
+    with st.expander("Ver tablas de detalle (Conservador)"):
+        seg = dfs.get("yld_seg"); det = dfs.get("yld_det"); cur = dfs.get("yld_curv")
+        if seg is not None and not seg.empty:
+            st.markdown("*Segmento (Conservador)*")
+            seg_show = seg.copy()
+            for c in ["ingreso_base","ingreso_opt","utilidad_base","utilidad_opt","EAD_in","EAD_out"]:
+                if c in seg_show.columns: seg_show[c] = seg_show[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            st.dataframe(seg_show, use_container_width=True)
+        if cur is not None and not cur.empty:
+            st.markdown("*Curva por segmento (APR ponderado & EAD)*")
+            st.dataframe(cur, use_container_width=True)
+        if det is not None and not det.empty:
+            st.markdown("*Detalle clientes (Conservador)*")
+            st.dataframe(det.head(2000), use_container_width=True)
+
+    with st.expander("Ver tablas de detalle (Potenciado)"):
+        seg = dfs.get("yld_seg_aggr"); det = dfs.get("yld_det_aggr"); cur = dfs.get("yld_curv_aggr")
+        if seg is not None and not seg.empty:
+            st.markdown("*Segmento (Potenciado)*")
+            seg_show = seg.copy()
+            for c in ["ingreso_base","ingreso_opt","utilidad_base","utilidad_opt","EAD_in","EAD_out"]:
+                if c in seg_show.columns: seg_show[c] = seg_show[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            st.dataframe(seg_show, use_container_width=True)
+        if cur is not None and not cur.empty:
+            st.markdown("*Curva por segmento (APR ponderado & EAD)*")
+            st.dataframe(cur, use_container_width=True)
+        if det is not None and not det.empty:
+            st.markdown("*Detalle clientes (Potenciado)*")
+            st.dataframe(det.head(2000), use_container_width=True)
 
 # ================
-# Arista 3 – Incentivos
+# Arista 3 – Incentivos (Conservador + Potenciado en una pestaña)
 # ================
 with tabs[2]:
     st.header("Arista 3 – Incentivos")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Invertimos en incentivos solo donde el ROI es positivo: más ingresos por cada peso invertido.")
+    st.markdown("Invertimos en incentivos *solo donde el ROI es positivo, con un **presupuesto* que puede ser conservador o potenciado.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-    - Costo incentivos: gasto total en beneficios.  
-    - Ingreso incremental: ingresos adicionales generados.  
-    - ROI: Retorno de la inversión = Ingreso / Costo.
+    - Costo incentivos: gasto total en beneficios asignados.  
+    - Ingreso incremental: ingresos adicionales generados por incentivos.  
+    - ROI: Ingreso incremental / Costo (debe ser > 0).  
     """)
 
-    st.markdown("### Análisis Ejecutivo")
-    st.success("Es como fertilizar solo las plantas que realmente responden: cada peso en incentivos genera retorno multiplicado.")
+    def render_incent_block(title, det_df, sum_df):
+        st.subheader(title)
+        if (det_df is None or det_df.empty) and (sum_df is None or sum_df.empty):
+            st.info("No se encontraron datos para este escenario en el bundle.")
+            return
+        # Cálculo robusto por si el summary no está
+        if sum_df is not None and not sum_df.empty:
+            costo = float(sum_df.get("budget_usado", pd.Series([np.nan])).iloc[0])
+            ingreso_inc = float(sum_df.get("ingreso_inc_total", pd.Series([np.nan])).iloc[0])
+        else:
+            # fallback al detalle
+            costo = pd.to_numeric(det_df.get("incentivo", pd.Series(dtype=float)), errors="coerce").fillna(0).sum() if det_df is not None else np.nan
+            ingreso_inc = pd.to_numeric(det_df.get("ingreso_incremental", pd.Series(dtype=float)), errors="coerce").fillna(0).sum() if det_df is not None else np.nan
+        roi = (ingreso_inc / costo) if (costo and costo>0) else np.nan
 
-    det = dfs.get("inc_det"); summ = dfs.get("inc_sum")
-    if summ is not None and not summ.empty:
-        def s0(c): return pd.to_numeric(summ[c], errors="coerce").iloc[0] if c in summ.columns else np.nan
-        costo   = s0("total_incentivo")
-        uplift  = s0("ingreso_incremental")
-        roi_avg = s0("roi_promedio")
         kpi_row("Costo de Incentivos", costo, costo, moneda, usdclp)
-        kpi_row("Ingreso Incremental", uplift, uplift, moneda, usdclp)
-        st.metric("ROI (promedio)", fmt_pct_val(roi_avg*100 if pd.notna(roi_avg) else np.nan))
-    elif det is not None and not det.empty:
-        cost_cols = [c for c in det.columns if "cost" in c.lower()]
-        up_cols   = [c for c in det.columns if "uplift" in c.lower() or "ingreso" in c.lower()]
-        costo  = pd.to_numeric(det[cost_cols].sum(axis=1), errors="coerce").fillna(0).sum() if cost_cols else 0.0
-        uplift = pd.to_numeric(det[up_cols].sum(axis=1), errors="coerce").fillna(0).sum() if up_cols else 0.0
-        roi = uplift/costo if costo>0 else np.nan
-        kpi_row("Costo de Incentivos", costo, costo, moneda, usdclp)
-        kpi_row("Ingreso Incremental", uplift, uplift, moneda, usdclp)
-        st.metric("ROI", fmt_pct_val(roi*100 if pd.notna(roi) else np.nan))
-    else:
-        st.info("No hay datos de incentivos en el bundle.")
+        kpi_row("Ingreso Incremental", ingreso_inc, ingreso_inc, moneda, usdclp)
+        st.metric("ROI", fmt_pct_val((roi*100) if pd.notna(roi) else np.nan))
+
+        # Tabla detalle
+        if det_df is not None and not det_df.empty:
+            with st.expander("Ver detalle de clientes"):
+                st.dataframe(det_df.head(2000), use_container_width=True)
+        if sum_df is not None and not sum_df.empty:
+            with st.expander("Ver resumen de diagnóstico"):
+                st.dataframe(sum_df, use_container_width=True)
+
+    st.markdown("### Análisis Ejecutivo")
+    st.success("El escenario *Conservador* usa un presupuesto pequeño (cobertura acotada). El *Potenciado* amplía cobertura manteniendo *ROI>0* y límites definidos.")
+
+    # Conservador
+    render_incent_block("Escenario Conservador", dfs.get("inc_det"), dfs.get("inc_sum"))
+    st.divider()
+    # Potenciado
+    render_incent_block("Escenario Potenciado", dfs.get("inc_det_aggr"), dfs.get("inc_sum_aggr"))
+
+    # Sensibilidad de presupuesto (si existe)
+    with st.expander("Sensibilidad de presupuesto (si está disponible)"):
+        sens_c = dfs.get("inc_sens"); sens_a = dfs.get("inc_sens_aggr")
+        if sens_c is not None and not sens_c.empty:
+            st.markdown("*Conservador*")
+            st.dataframe(sens_c, use_container_width=True)
+        if sens_a is not None and not sens_a.empty:
+            st.markdown("*Potenciado*")
+            st.dataframe(sens_a, use_container_width=True)
 
 # ================
-# Arista 4 – Capital / Provisiones
+# Arista 4 – Capital / Provisiones (Conservador + Potenciado en una pestaña)
 # ================
 with tabs[3]:
     st.header("Arista 4 – Capital / Provisiones")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Hacemos más eficiente el capital requerido y reducimos provisiones, liberando recursos para crecer.")
+    st.markdown("Hacemos más eficiente el *capital requerido* (RWA, K) y reducimos *provisiones* (≈EL IFRS9) manteniendo el mismo negocio.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-    - Capital requerido: Consumo de capital regulatorio (proxy RW×K×EAD).  
-    - Provisiones: reservas por riesgo crediticio ≈ EL.  
-    - Liberación: diferencia de capital/provisiones antes y después.
+    - Capital requerido (K): proporción regulatoria aplicada a RWA.  
+    - RWA: activos ponderados por riesgo (proxy estándar sobre EAD).  
+    - Provisiones (≈EL): PD × LGD × EAD (IFRS9).  
     """)
 
+    def g0(df, name):
+        return df[name].iloc[0] if (df is not None and not df.empty and name in df.columns) else np.nan
+
+    def render_capital_block(title, port_df):
+        st.subheader(title)
+        if port_df is None or port_df.empty:
+            st.info("No se encontraron datos para este escenario en el bundle.")
+            return
+        ead = g0(port_df,"EAD"); el = g0(port_df,"EL")
+        rwa = g0(port_df,"RWA"); k  = g0(port_df,"K")
+
+        kpi_row("EAD", ead, ead, moneda, usdclp)
+        kpi_row("Provisiones (≈EL)", el, el, moneda, usdclp)
+        kpi_row("RWA", rwa, rwa, moneda, usdclp)
+        kpi_row("Capital Requerido (K)", k, k, moneda, usdclp)
+
     st.markdown("### Análisis Ejecutivo")
-    st.success("Reorganizamos el capital inmovilizado: seguimos protegidos, pero con menos exceso, liberando recursos para oportunidades rentables.")
+    st.success("El escenario *Conservador* muestra el consumo de capital y provisiones con ajustes moderados. El *Potenciado* refleja mayor eficiencia en consumo de capital, siempre dentro del marco Basel/IFRS.")
 
-    cap_port = norm_cap_port(dfs.get("cap_port"))
-    if cap_port is not None and not cap_port.empty:
-        def g0(df, name): return df[name].iloc[0] if name in df.columns else np.nan
-        kpi_row("Capital Requerido", g0(cap_port,"capital_req_base"), g0(cap_port,"capital_req_opt"), moneda, usdclp)
-        kpi_row("Provisiones", g0(cap_port,"prov_base"), g0(cap_port,"prov_opt"), moneda, usdclp)
+    # Conservador
+    render_capital_block("Escenario Conservador", dfs.get("cap_port"))
+    st.divider()
+    # Potenciado
+    render_capital_block("Escenario Potenciado", dfs.get("cap_port_aggr"))
 
-# ================
-# Guardrails
-# ================
-with tabs[4]:
-    st.header("Guardrails (Resguardos)")
-    st.markdown("Límites regulatorios y de negocio para asegurar robustez y cumplimiento.")
+    # Tablas expandibles
+    with st.expander("Ver tablas de detalle"):
+        seg_c = dfs.get("cap_seg"); det_c = dfs.get("cap_det")
+        seg_a = dfs.get("cap_seg_aggr"); det_a = dfs.get("cap_det_aggr")
 
-    gport = dfs.get("guard_port"); gseg = dfs.get("guard_seg")
+        if seg_c is not None and not seg_c.empty:
+            st.markdown("*Segmento (Conservador)*")
+            seg_show = seg_c.copy()
+            for c in ["EAD","EL","RWA","K"]:
+                if c in seg_show.columns: seg_show[c] = seg_show[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            st.dataframe(seg_show, use_container_width=True)
 
-    if gport is None or gport.empty:
-        st.info("No hay tablas de guardrails en el bundle. Genera con las celdas 15–16 del notebook.")
-    else:
-        gport_fmt = gport.copy()
-        pct_like_cols = [c for c in gport_fmt.columns if "share" in c.lower() or "ratio" in c.lower() or "pct" in c.lower()]
-        for c in pct_like_cols:
-            gport_fmt[c] = gport_fmt[c].apply(fmt_pct_val)
-        st.subheader("Portafolio")
-        st.dataframe(gport_fmt, use_container_width=True)
+        if seg_a is not None and not seg_a.empty:
+            st.markdown("*Segmento (Potenciado)*")
+            seg_show = seg_a.copy()
+            for c in ["EAD","EL","RWA","K"]:
+                if c in seg_show.columns: seg_show[c] = seg_show[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            st.dataframe(seg_show, use_container_width=True)
 
-    if gseg is not None and not gseg.empty:
-        gseg_fmt = gseg.copy()
-        for c in gseg_fmt.columns:
-            if "share" in c.lower() or "pct" in c.lower():
-                gseg_fmt[c] = gseg_fmt[c].apply(fmt_pct_val)
-        st.subheader("Segmento")
-        st.dataframe(gseg_fmt, use_container_width=True)
+        if det_c is not None and not det_c.empty:
+            st.markdown("*Detalle clientes (Conservador)*")
+            st.dataframe(det_c.head(2000), use_container_width=True)
+        if det_a is not None and not det_a.empty:
+            st.markdown("*Detalle clientes (Potenciado)*")
+            st.dataframe(det_a.head(2000), use_container_width=True)
 
 # ==========================
 # Footer

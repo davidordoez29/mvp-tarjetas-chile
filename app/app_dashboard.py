@@ -1,4 +1,4 @@
-# app/app_dashboard.py — MVP Bancario (4 Aristas) v3.0
+# app/app_dashboard.py — MVP Bancario (4 Aristas) v3.2
 # Escenarios: Conservador / Potenciado  |  Moneda: CLP / USD
 # IFRS9 + Basel (proxy) | KPIs robustos con fallback desde detail | Pitches ejecutivos
 
@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ================
-# Config archivos
-# ================
+# ==========================
+# Config archivos / escenarios
+# ==========================
 REQ = {
     # Arista 1
     "a1_port": "default_portfolio{S}.csv",
@@ -35,6 +35,8 @@ REQ = {
     "gr_eval": "guardrails_eval_portfolio.csv",
 }
 
+SCENARIOS = {"Conservador": "", "Potenciado": "_agresivo"}
+
 CANDIDATE_DIRS = [
     os.environ.get("BUNDLE_DIR","").strip(),
     "/content/out/dashboard_bundle",
@@ -44,11 +46,9 @@ CANDIDATE_DIRS = [
     "./out",
 ]
 
-SCENARIOS = {"Conservador": "", "Potenciado": "_agresivo"}
-
-# ================
+# ==========================
 # Parseo/formatos
-# ================
+# ==========================
 def parse_num_any(v):
     if v is None: return np.nan
     if isinstance(v, (int, float)):
@@ -60,10 +60,11 @@ def parse_num_any(v):
     d, c = s.rfind("."), s.rfind(",")
     try:
         if d == -1 and c == -1:
-            return float(s) if s.lstrip("-").replace(".","",1).isdigit() else np.nan
-        if c > d:
+            # número simple
+            return float(s) if re.fullmatch(r"-?\d+(\.\d+)?", s) else np.nan
+        if c > d:  # formato latam
             s = s.replace(".","").replace(",",".")
-        else:
+        else:      # formato en-US
             s = s.replace(",","")
         return float(s)
     except:
@@ -127,25 +128,24 @@ def df_fmt_pct(df, cols):
         if c in df2.columns: df2[c] = df2[c].apply(fmt_pct)
     return df2
 
-# ===================
+# ==========================
 # Bundle I/O helpers
-# ===================
+# ==========================
 def _exists(bundle_dir, key, suf):
     return os.path.exists(os.path.join(bundle_dir, REQ[key].format(S=suf)))
 
-def autodetect_bundle(suf):
+def autodetect_bundle():
+    # encuentra un dir que tenga al menos algún archivo requerido (de cualquier escenario)
     for d in CANDIDATE_DIRS:
         if d and os.path.isdir(d):
-            if any(_exists(d,k,suf) for k in ["a1_port","a2_port","a4_port"]):
-                return d
-            # si no había de ese sufijo, aceptar de todos modos si hay archivos
-            if any(os.path.exists(os.path.join(d, REQ[k].format(S=s))) for k in ["a1_port","a2_port","a4_port"] for s in ["","_agresivo"]):
-                return d
+            for s in ["", "_agresivo"]:
+                if any(_exists(d,k,s) for k in ["a1_port","a1_det","a2_port","a2_det","a4_port","a4_det"]):
+                    return d
     return None
 
-def scenario_available(bundle_dir):
-    has_cons = any(_exists(bundle_dir,k,"") for k in ["a1_port","a2_port","a4_port"])
-    has_aggr = any(_exists(bundle_dir,k,"_agresivo") for k in ["a1_port","a2_port","a4_port"])
+def scenario_presence(bundle_dir):
+    has_cons = any(_exists(bundle_dir,k,"") for k in ["a1_port","a1_det","a2_port","a2_det","a4_port","a4_det"])
+    has_aggr = any(_exists(bundle_dir,k,"_agresivo") for k in ["a1_port","a1_det","a2_port","a2_det","a4_port","a4_det"])
     return has_cons, has_aggr
 
 def load_csv(bundle_dir, key, suf):
@@ -153,7 +153,8 @@ def load_csv(bundle_dir, key, suf):
     if not os.path.exists(p): return None
     try:
         return pd.read_csv(p)
-    except:
+    except Exception as e:
+        st.warning(f"No pude leer {os.path.basename(p)} ({e}).")
         return None
 
 def first_value(df, candidates):
@@ -171,41 +172,55 @@ def sum_col(df, candidates):
             return df[c].map(parse_num_any).sum()
     return None
 
-# ===================
-# App layout
-# ===================
+def wavg_from_detail(df, val_col_candidates, weight_col_candidates):
+    if df is None or df.empty: return None
+    vcol = next((c for c in val_col_candidates if c in df.columns), None)
+    wcol = next((c for c in weight_col_candidates if c in df.columns), None)
+    if not vcol or not wcol: return None
+    v = df[vcol].map(parse_num_any)
+    w = df[wcol].map(parse_num_any)
+    tot_w = w.sum()
+    if pd.isna(tot_w) or tot_w == 0: return None
+    return float((v*w).sum() / tot_w)
+
+# ==========================
+# App
+# ==========================
 st.set_page_config(page_title="MVP Bancario — 4 Aristas", layout="wide")
 
 st.sidebar.title("⚙️ Configuración")
-escenario_ui = st.sidebar.radio("Escenario", list(SCENARIOS.keys()), horizontal=True, index=1)  # default Potenciado
-suf_ui = SCENARIOS[escenario_ui]
+escenario_ui = st.sidebar.radio("Escenario", list(SCENARIOS.keys()), horizontal=True, index=1)  # por defecto Potenciado
+suf_req = SCENARIOS[escenario_ui]
 
 moneda = st.sidebar.radio("Moneda", ["CLP","USD"], horizontal=True)
 usdclp = float(st.sidebar.number_input("USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0))
 
-default_dir = autodetect_bundle(suf_ui) or "/content/out/dashboard_bundle"
+default_dir = autodetect_bundle() or "/content/out/dashboard_bundle"
 bundle_dir = st.sidebar.text_input("📦 Ruta del bundle", value=(default_dir or ""), help="Ej: /content/out/dashboard_bundle").strip() or default_dir
 
 st.title("📊 MVP Bancario — Optimización en 4 Aristas")
 st.caption("Modelo matemático con cumplimiento (IFRS9 + Basel proxy). *Actual vs Optimizado* por arista, escenario y moneda.")
 
-if not bundle_dir or not os.path.isdir(bundle_dir):
-    st.error("No encuentro el bundle. Revisa la ruta o genera el paquete en el Notebook.")
+if not os.path.isdir(bundle_dir):
+    st.error("No encuentro la carpeta del bundle. Revisa la ruta o genera el paquete en el Notebook.")
     st.stop()
 
-has_cons, has_aggr = scenario_available(bundle_dir)
-if suf_ui == "" and not has_cons and has_aggr:
-    st.info("⚠️ No hay archivos Conservador; usando *Potenciado* disponibles.")
-    suf_ui = "_agresivo"
-elif suf_ui == "_agresivo" and not has_aggr and has_cons:
-    st.info("⚠️ No hay archivos Potenciado; usando *Conservador* disponibles.")
-    suf_ui = ""
+has_cons, has_aggr = scenario_presence(bundle_dir)
 
-# Diagnóstico rápido
-with st.expander("🔎 Diagnóstico del bundle", expanded=False):
+# Escenario efectivo (si el elegido no existe, forzar el que sí exista)
+suf = suf_req
+if suf_req == "" and not has_cons and has_aggr:
+    st.info("⚠️ No hay archivos Conservador; usando *Potenciado* disponibles.")
+    suf = "_agresivo"
+elif suf_req == "_agresivo" and not has_aggr and has_cons:
+    st.info("⚠️ No hay archivos Potenciado; usando *Conservador* disponibles.")
+    suf = ""
+
+# Diagnóstico de archivos
+with st.expander("🔎 Diagnóstico del bundle (escenario activo)", expanded=False):
     rows = []
     for key, pat in REQ.items():
-        p = os.path.join(bundle_dir, pat.format(S=suf_ui))
+        p = os.path.join(bundle_dir, pat.format(S=suf))
         rows.append({"archivo": os.path.basename(p), "existe": os.path.exists(p)})
     st.dataframe(pd.DataFrame(rows), use_container_width=True, height=240)
 
@@ -222,19 +237,19 @@ tabs = st.tabs([
 # ==============================
 with tabs[0]:
     st.header("Arista 1 – Default/Impago")
-    st.markdown("*Objetivo:* Mantener *EAD* total estable, recomponiendo el mix hacia menor *PD* para *reducir EL* sin frenar el negocio.")
+    st.markdown("*Objetivo:* Mantener *EAD* estable y recomponer mix hacia menor *PD* para *reducir EL* sin frenar el negocio.")
     st.markdown("""
 *KPIs Clave*
 - *EAD*: Exposición en riesgo (total estable; cambia la composición por segmento).  
 - *Pérdida Esperada (EL): PD × LGD × EAD (IFRS9 12m). Buscamos *↓**.  
 - *Interés Devengado Bruto*: APR × EAD (proxy del margen antes de pérdidas).  
-- *Utilidad: Interés – EL – (costos aplicables). Buscamos *↑**.  
+- *Utilidad: Interés – EL – costos aplicables. Buscamos *↑**.  
 - *PD ponderado: Promedio ponderado por EAD; buscaremos *↓**.
     """)
-    st.success("*Pitch:* Reasignamos exposición desde clientes/segmentos más riesgosos a más sanos manteniendo producción, reduciendo EL y mejorando utilidad sin comprometer el crecimiento.")
+    st.success("*Pitch:* Reasignamos exposición desde clientes/segmentos más riesgosos a más sanos, reduciendo EL y mejorando utilidad sin sacrificar producción.")
 
-    A1P = load_csv(bundle_dir, "a1_port", suf_ui)
-    A1D = load_csv(bundle_dir, "a1_det",  suf_ui)
+    A1P = load_csv(bundle_dir, "a1_port", suf)
+    A1D = load_csv(bundle_dir, "a1_det",  suf)
 
     inc_a = first_value(A1P, ["Interes_devengado_bruto_actual","Ingreso_actual","ingreso_base"])
     inc_b = first_value(A1P, ["Interes_devengado_bruto_optimizado","Ingreso_optimizado","ingreso_final","ingreso_opt"])
@@ -255,14 +270,18 @@ with tabs[0]:
         ead_a = ead_a or sum_col(A1D, ["e_base","EAD_base"])
         ead_b = ead_b or sum_col(A1D, ["e_final","EAD_opt"])
 
+    # PD ponderado: portafolio si existe; si no, desde detail (weighted)
+    pd_a = first_value(A1P, ["PD_pond_actual","PDpond_actual"])
+    pd_b = first_value(A1P, ["PD_pond_optimizado","PDpond_optimizado"])
+    if (pd_a is None) and (A1D is not None and not A1D.empty):
+        pd_a = wavg_from_detail(A1D, ["pd_base","PD_12m"], ["e_base","EAD_base"])
+    if (pd_b is None) and (A1D is not None and not A1D.empty):
+        pd_b = wavg_from_detail(A1D, ["pd_final","PD_12m","pd_base"], ["e_final","EAD_opt","e_base"])
+
     kpi_row_money("Interés Devengado Bruto", inc_a, inc_b, moneda, usdclp, "APR×EAD (proxy margen).")
     kpi_row_money("Pérdida Esperada (EL)", el_a, el_b, moneda, usdclp)
     kpi_row_money("Utilidad", util_a, util_b, moneda, usdclp)
     kpi_row_money("EAD", ead_a, ead_b, moneda, usdclp)
-
-    # PD ponderado si viene en portfolio
-    pd_a = first_value(A1P, ["PD_pond_actual","PDpond_actual"])
-    pd_b = first_value(A1P, ["PD_pond_optimizado","PDpond_optimizado"])
     if (pd_a is not None) or (pd_b is not None):
         kpi_row_pct("PD Ponderado", (pd_a*100 if pd_a is not None else None), (pd_b*100 if pd_b is not None else None))
 
@@ -277,19 +296,19 @@ with tabs[0]:
 # ==============================
 with tabs[1]:
     st.header("Arista 2 – Yield/Pricing")
-    st.markdown("*Objetivo:* Encontrar el *APR óptimo* por segmento maximizando *Utilidad* balanceando precio y volumen (elasticidad).")
+    st.markdown("*Objetivo:* Encontrar el *APR óptimo* maximizando *Utilidad* con elasticidad de volumen.")
     st.markdown("""
 *KPIs*
 - *Utilidad Total* (↑).  
 - *Interés Bruto Total* = APR × EAD_out.  
-- *EAD_in / EAD_out*: Volumen antes/después por efecto de precio.  
-- *APR óptimo por segmento* respetando bandas/caps.
+- *EAD_in / EAD_out*: Volumen antes/después por efecto precio.  
+- *(Opcional)* Curva de APR por segmento (para QA).
     """)
-    st.success("*Pitch:* Movemos la perilla del precio para capturar el punto de máxima utilidad; si sube mucho, cae el volumen; si baja de más, no cubre riesgo/costo. El equilibrio correcto maximiza el resultado.")
+    st.success("*Pitch:* Ajustamos precio como una perilla para capturar el punto de máxima utilidad; balance entre margen y volumen.")
 
-    A2P = load_csv(bundle_dir, "a2_port", suf_ui)
-    A2S = load_csv(bundle_dir, "a2_seg",  suf_ui)
-    A2D = load_csv(bundle_dir, "a2_det",  suf_ui)
+    A2P = load_csv(bundle_dir, "a2_port", suf)
+    A2S = load_csv(bundle_dir, "a2_seg",  suf)
+    A2D = load_csv(bundle_dir, "a2_det",  suf)
 
     util_a = first_value(A2P, ["utilidad_base","Utilidad_base"])
     util_b = first_value(A2P, ["utilidad_opt","Utilidad_opt"])
@@ -324,19 +343,19 @@ with tabs[1]:
 # ==============================
 with tabs[2]:
     st.header("Arista 3 – Incentivos")
-    st.markdown("*Objetivo:* Asignar incentivos sólo donde *ROI>0, bajo un **presupuesto* global. Aseguramos impacto positivo neto.")
+    st.markdown("*Objetivo:* Asignar incentivos sólo donde *ROI>0, bajo **presupuesto*.")
     st.markdown("""
 *KPIs*
 - *Costo de incentivos*.  
-- *Ingreso incremental (uplift atribuible)*.  
+- *Ingreso incremental* (uplift atribuible).  
 - *ROI* = ingreso_inc / costo (↑).  
-- *Sensibilidades* por umbral de ROI y presupuesto.
+- *Sensibilidades* por ROI mínimo / presupuesto.
     """)
-    st.success("*Pitch:* Fertilizamos solo donde responde: cada peso invertido genera retorno multiplicado. Sin desperdicios generalizados.")
+    st.success("*Pitch:* Fertilizamos sólo donde responde: cada peso invertido genera retorno multiplicado.")
 
-    A3S = load_csv(bundle_dir, "a3_sum",  suf_ui)
-    A3D = load_csv(bundle_dir, "a3_det",  suf_ui)
-    A3X = load_csv(bundle_dir, "a3_sens", suf_ui)
+    A3S = load_csv(bundle_dir, "a3_sum",  suf)
+    A3D = load_csv(bundle_dir, "a3_det",  suf)
+    A3X = load_csv(bundle_dir, "a3_sens", suf)
 
     if (A3S is None or A3S.empty) and (A3D is None or A3D.empty):
         st.warning("No hay datos de incentivos para este escenario.")
@@ -357,7 +376,8 @@ with tabs[2]:
         if A3D is not None and not A3D.empty:
             st.markdown("*Detalle seleccionado*")
             df = A3D.copy()
-            if "ROI" in df.columns and "roi" not in df.columns: df = df.rename(columns={"ROI":"roi"})
+            if "ROI" in df.columns and "roi" not in df.columns:
+                df = df.rename(columns={"ROI":"roi"})
             st.dataframe(df_fmt_pct(df_fmt_money(df, ["costo_incentivo","ingreso_incremental","budget_usado"], moneda, usdclp), ["roi"]),
                          use_container_width=True, height=360)
 
@@ -371,7 +391,7 @@ with tabs[2]:
 # ==============================
 with tabs[3]:
     st.header("Arista 4 – Capital/Provisiones")
-    st.markdown("*Objetivo:* Hacer más eficiente el *consumo de capital* (RWA, K) y reducir *Provisiones (≈ EL)* manteniendo la calidad.")
+    st.markdown("*Objetivo:* Hacer más eficiente el *consumo de capital* (RWA, K) y reducir *Provisiones (≈ EL)* manteniendo calidad.")
     st.markdown("""
 *KPIs (Portafolio)*
 - *EAD* (base vs opt).  
@@ -379,11 +399,11 @@ with tabs[3]:
 - *Capital (K)* = K_ratio × RWA.  
 - *Provisiones (≈ EL)*.  
     """)
-    st.success("*Pitch:* Reorganizamos el capital protegido: seguimos cubiertos sin exceso inmovilizado. Se libera capacidad para crecer con control de riesgo.")
+    st.success("*Pitch:* Seguimos protegidos sin exceso inmovilizado. Liberamos capacidad para crecer con control de riesgo.")
 
-    A4P = load_csv(bundle_dir, "a4_port", suf_ui)
-    A4D = load_csv(bundle_dir, "a4_det",  suf_ui)
-    A4S = load_csv(bundle_dir, "a4_seg",  suf_ui)
+    A4P = load_csv(bundle_dir, "a4_port", suf)
+    A4D = load_csv(bundle_dir, "a4_det",  suf)
+    A4S = load_csv(bundle_dir, "a4_seg",  suf)
 
     ead_a = first_value(A4P, ["EAD_base","EAD"])
     ead_b = first_value(A4P, ["EAD_opt","EAD"])
@@ -451,8 +471,8 @@ with tabs[4]:
         else:
             st.dataframe(GE, use_container_width=True, height=320)
 
-# ================
+# ==========================
 # Footer
-# ================
+# ==========================
 st.markdown("---")
 st.caption("© MVP Bancario — Motor de Optimización (IFRS9 + Basel proxy). Listo para piloto IT.")

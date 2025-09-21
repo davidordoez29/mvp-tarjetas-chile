@@ -1,6 +1,10 @@
 # app/app_dashboard.py — MVP Bancario (4 Aristas) CONS/POT con CLP/USD
-# Definiciones "para un niño de 5 años", análisis ejecutivo claro,
-# y formateo numérico uniforme en tablas y KPIs.
+# Secciones ajustadas:
+# - “¿Qué resolvemos aquí?”: pitch breve original restaurado por arista.
+# - “KPIs y Definiciones”: más claras y expandidas, lenguaje profesional accesible.
+# - “Análisis Ejecutivo”: describe cálculos del motor con vocabulario técnico claro.
+# - Formato numérico: moneda y % uniformes en TODAS las tablas.
+# - Fix: NameError _PCT_HINTS.
 
 import os, json, math, re
 from pathlib import Path
@@ -120,6 +124,12 @@ def _load_for_scenario(bundle: Path, escenario: str) -> dict[str, pd.DataFrame |
 # ==========================
 _num_like = re.compile(r"^-?\d+(\.\d+)?$")
 
+# Hints de columnas: % y moneda
+# (incluimos 'apr' y 'r_' para mostrar APR/r_base/r_opt como porcentaje)
+PCT_HINTS   = ("pd_pond", "pd", "pd12", "pd_12", "roi", "apr", "r_", "%")
+_MONEY_AVOID = ("id", "id_cliente", "segmento")  # nunca formatear estas
+# NOTA: auto-monetizamos todo lo que no luzca % y no esté en _MONEY_AVOID.
+
 def _to_display_currency(val: float, target: str, usdclp: float) -> float | None:
     if pd.isna(val): return None
     if target.upper() == "USD":
@@ -187,24 +197,18 @@ def kpi_row_pct(label: str, actual_pct, opt_pct, help_text: str = ""):
         vp = var_pct(actual_pct, opt_pct)
         st.metric(label="VAR %", value=fmt_pct_val(vp) if vp is not None else "—")
 
-# === Formateo de DataFrames (moneda/%) ===
-_MONEY_HINTS = ("ead","e_base","e_out","ead_in","EAD","ingreso","income","util","EL","COF","rwa","k","prov","capital")
-PCT_HINTS   = ("pd_pond","pd "," pd","pd_12","roi","%")
-
 def format_df_auto(df: pd.DataFrame, moneda: str, usdclp: float) -> pd.DataFrame:
+    """Formatea todas las columnas como % o moneda según hints, excluye id/segmento."""
     if df is None or df.empty: return df
     out = df.copy()
     for c in out.columns:
         lc = c.lower()
-        # columnas que NO se formatean como moneda
-        if lc in ("id","id_cliente","segmento"):
+        if lc in _MONEY_AVOID:
             continue
-        # porcentajes
         if any(h in lc for h in _PCT_HINTS):
             out[c] = out[c].apply(fmt_pct_val)
-            continue
-        # números (moneda)
-        out[c] = out[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+        else:
+            out[c] = out[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
     return out
 
 def _first(df: pd.DataFrame, col: str):
@@ -264,40 +268,35 @@ with tabs[0]:
     st.header("Arista 1 — Default/Impago")
 
     st.markdown("### ¿Qué resolvemos aquí?")
+    st.markdown("Reducimos la *pérdida esperada (EL)* reasignando la exposición a segmentos menos riesgosos, sin frenar el negocio.")
+
+    st.markdown("### KPIs y Definiciones")
     st.markdown("""
-*Como a un niño:* Imagina que tenemos muchas pelotas (dinero prestado). Algunas están en cajas frágiles (clientes más riesgosos) y otras en cajas fuertes (clientes más sanos).  
-*¿Qué hacemos?* Movemos algunas pelotas de las cajas frágiles a las fuertes. Así, *perdemos menos* si algo sale mal.
+- *EAD (Exposición): monto en riesgo (saldo expuesto). Buscamos mantener el **total* estable para no frenar el negocio.  
+- *EL (Expected Loss): pérdida promedio esperada por riesgo de crédito: **EL = PD × LGD × EAD*.  
+- *Interés: ingresos financieros del portafolio: **APR × EAD* (antes y después de la optimización).  
+- *Utilidad: resultado económico después de riesgo y fondeo: **Interés − EL − COF*.  
+- *PD ponderado: probabilidad media de incumplimiento ponderada por exposición: **Σ(PD × EAD)/Σ(EAD)*.
     """)
 
-    st.markdown("### KPIs y Definiciones (explicado fácil)")
+    st.markdown("### Análisis Ejecutivo")
     st.markdown("""
-- *EAD (Exposición): cuántas pelotas tenemos en juego. Queremos **mantener* el total.  
-- *EL (Pérdida Esperada): pelotas que **podríamos perder* si algunas cajas se rompen (PD × LGD × EAD).  
-- *Interés: pelotas que **ganamos* por prestar (tasa × EAD).  
-- *Utilidad: pelotas ganadas **después de restar pérdidas* y el costo del dinero (COF).  
-- *PD ponderado: qué tan frágil es el conjunto de cajas, **promedio* según cuántas pelotas hay en cada una.
-    """)
-
-    st.markdown("### ¿Qué cálculos hace el motor aquí?")
-    st.markdown("""
-1) Mide qué cajas son *frágiles* (PD alta y baja rentabilidad) y cuáles son *fuertes* (PD baja y buena rentabilidad).  
-2) *Mueve* una parte de las pelotas desde frágiles hacia fuertes (con límites para no desbalancear).  
-3) Vuelve a calcular: *EL baja, **PD promedio baja, y **la utilidad sube* porque hay menos pérdidas esperadas.
+El motor evalúa el perfil de riesgo-rentabilidad por cliente/segmento, define un *límite de traslado de EAD* y *redistribuye* exposición desde perfiles de *alto PD/menor utilidad* hacia perfiles de *menor PD/mayor utilidad*, respetando guardrails.  
+Tras el rebalanceo se recalculan *EL, **PD ponderado, **interés* y *utilidad; el portafolio queda **más sano* con el *mismo EAD total*.
     """)
 
     port = dfs.get("def_port")
     if port is not None and not port.empty:
         kpi_row("EAD", _first(port,"EAD_actual"), _first(port,"EAD_optimizado"), moneda, usdclp,
-                "Pelotas en juego: debe mantenerse estable.")
+                "Exposición total mantenida.")
         kpi_row("EL (Pérdida Esperada)", _first(port,"EL_actual"), _first(port,"EL_optimizado"), moneda, usdclp,
-                "Pelotas que podríamos perder si algo sale mal.")
+                "Baja al mejorar el mix de riesgo.")
         kpi_row("Utilidad", _first(port,"Utilidad_actual"), _first(port,"Utilidad_optimizada"), moneda, usdclp,
-                "Pelotas ganadas netas: interés − pérdidas − costo del dinero.")
+                "Interés menos riesgo y costo de fondos.")
         if "PD_pond_actual" in port.columns and "PD_pond_optimizado" in port.columns:
             kpi_row_pct("PD Ponderado", _first(port,"PD_pond_actual")*100, _first(port,"PD_pond_optimizado")*100,
-                        "Fragilidad promedio del conjunto de cajas.")
+                        "Probabilidad media de incumplimiento ponderada por EAD.")
 
-    # Tablas formateadas
     seg = dfs.get("def_seg")
     if seg is not None and not seg.empty:
         st.markdown("#### Resultados por segmento")
@@ -315,23 +314,19 @@ with tabs[1]:
     st.header("Arista 2 — Yield/Pricing")
 
     st.markdown("### ¿Qué resolvemos aquí?")
+    st.markdown("Encontramos la *tasa (APR) óptima* que maximiza utilidad equilibrando *precio y volumen*.")
+
+    st.markdown("### KPIs y Definiciones")
     st.markdown("""
-*Como a un niño:* Si vendes limonada muy cara, pocos la compran; si la regalas, no ganas.  
-*¿Qué hacemos?* Buscamos el *precio justo* para ganar más *sin espantar* a los que compran.
+- *Interés total: flujo de intereses resultante (APR_opt × EAD_out*).  
+- *Utilidad total: **Interés − EL − COF* luego de aplicar la tasa óptima.  
+- *EAD_in / EAD_out*: exposición antes/después del ajuste de precio (efecto elasticidad de demanda por tasa).
     """)
 
-    st.markdown("### KPIs y Definiciones (explicado fácil)")
+    st.markdown("### Análisis Ejecutivo")
     st.markdown("""
-- *Interés total: lo que **cobramos* por prestar (tasa × EAD ajustado por demanda).  
-- *Utilidad total: interés **menos* pérdidas y costo del dinero.  
-- *EAD_in/EAD_out: pelotas **antes* y *después* del cambio de precio (porque sube o baja la demanda).
-    """)
-
-    st.markdown("### ¿Qué cálculos hace el motor aquí?")
-    st.markdown("""
-1) Probar una *tasa nueva* para cada segmento.  
-2) Estimar cuántas pelotas *quedan* con ese precio (algunas se van si sube mucho, otras llegan si baja).  
-3) Elegir la tasa que da *más utilidad: buen precio **y* buen volumen.
+El motor estima elasticidades por segmento, prueba *candidatos de APR, calcula el **volumen retenido/ganado (EAD_out)* y recomputa *interés, **EL* y *utilidad*.  
+Selecciona la APR que maximiza *utilidad* (no solo interés), cuidando no deteriorar la calidad crediticia ni violar guardrails.
     """)
 
     port = dfs.get("yld_port")
@@ -356,32 +351,25 @@ with tabs[2]:
     st.header("Arista 3 — Incentivos")
 
     st.markdown("### ¿Qué resolvemos aquí?")
+    st.markdown("Asignamos *incentivos* únicamente donde el *ROI* es positivo, maximizando ingreso incremental por peso invertido.")
+
+    st.markdown("### KPIs y Definiciones")
     st.markdown("""
-*Como a un niño:* Si pones abono en todas las plantas, gastas mucho.  
-*¿Qué hacemos?* Solo ponemos abono donde *sí crece más: así cada peso **rinde*.
+- *Costo de incentivos*: monto total destinado a beneficios.  
+- *Ingreso incremental*: ingresos adicionales atribuibles al incentivo (uplift medido/estimado).  
+- *ROI: **Ingreso incremental / Costo* (objetivo: *> 0* y superior al umbral).
     """)
 
-    st.markdown("### KPIs y Definiciones (explicado fácil)")
+    st.markdown("### Análisis Ejecutivo")
     st.markdown("""
-- *Costo de incentivos: lo que **gastamos* en abonos/premios.  
-- *Ingreso incremental: lo que **ganamos extra* gracias al abono.  
-- *ROI: por cada peso en abono, **cuántos pesos* vuelven (debe ser *mayor que 1*).
-    """)
-
-    st.markdown("### ¿Qué cálculos hace el motor aquí?")
-    st.markdown("""
-1) Estima dónde un incentivo *sí* cambia el comportamiento (más compra/uso).  
-2) *Asigna* solo a esos clientes.  
-3) Suma el extra que llegó y *resta* lo que costó: si el resultado es *positivo*, ganamos.
+A partir del detalle de pricing, se identifica el *universo elegible, se estima el **uplift* por cliente/segmento, se *asignan* incentivos bajo presupuesto y umbrales de ROI, y se consolidan *ingresos incrementales* y *costos*.  
+Se priorizan las asignaciones con *mayor retorno* y se respetan límites definidos en guardrails.
     """)
 
     det = dfs.get("inc_det")
     if det is not None and not det.empty:
-        # Buscar columnas de costo/ingreso incremental/ROI en forma robusta
         cost_cols = [c for c in det.columns if any(k in c.lower() for k in ["cost","costo"])]
         up_cols   = [c for c in det.columns if any(k in c.lower() for k in ["uplift","ingreso_inc","ingreso_incremental","delta_ingreso"])]
-        roi_cols  = [c for c in det.columns if "roi" in c.lower()]
-        # KPIs agregados (si no existen columnas, mostramos 0/— con claridad)
         costo = float(pd.to_numeric(det[cost_cols].sum(axis=1), errors="coerce").sum()) if cost_cols else 0.0
         uplift = float(pd.to_numeric(det[up_cols].sum(axis=1), errors="coerce").sum()) if up_cols else 0.0
         roi = (uplift / costo) if costo > 0 else np.nan
@@ -400,24 +388,20 @@ with tabs[3]:
     st.header("Arista 4 — Capital/Provisiones")
 
     st.markdown("### ¿Qué resolvemos aquí?")
+    st.markdown("Mejoramos el *consumo de capital regulatorio* y optimizamos *provisiones*, liberando recursos para crecer.")
+
+    st.markdown("### KPIs y Definiciones")
     st.markdown("""
-*Como a un niño:* Si guardas demasiadas pelotas “por si acaso”, no puedes jugar más.  
-*¿Qué hacemos?* Usamos menos pelotas guardadas *sin quedar desprotegidos. Así podemos **jugar más y mejor*.
+- *EAD*: exposición en riesgo (base vs optimizada).  
+- *RWA*: activos ponderados por riesgo (Basilea).  
+- *K (capital requerido): **RWA × K_ratio*.  
+- *Provisiones (≈EL)*: reservas por riesgo crediticio.
     """)
 
-    st.markdown("### KPIs y Definiciones (explicado fácil)")
+    st.markdown("### Análisis Ejecutivo")
     st.markdown("""
-- *EAD*: pelotas en juego.  
-- *RWA: pelotas **ponderadas por riesgo* (Basilea).  
-- *K (capital requerido): pelotas que debemos **guardar* por seguridad (RWA × K_ratio).  
-- *Provisiones (≈EL): pelotas guardadas por **pérdidas esperadas*.
-    """)
-
-    st.markdown("### ¿Qué cálculos hace el motor aquí?")
-    st.markdown("""
-1) Toma el resultado de default y pricing: con *menos riesgo, hay **menos RWA*.  
-2) Calcula *capital requerido (K)* y *provisiones* (≈EL).  
-3) Si bajan RWA y EL, *liberamos capital* para prestar *más y mejor*.
+Con el portafolio más sano (Default) y el precio eficiente (Pricing), disminuye el *riesgo efectivo*.  
+Se recalculan *RWA, **K* y, si corresponde, *provisiones (≈EL). La reducción sostenida en estos indicadores implica **liberación de capital* preservando el cumplimiento regulatorio.
     """)
 
     cap = dfs.get("cap_port")
@@ -425,7 +409,6 @@ with tabs[3]:
         kpi_row("EAD", _first(cap,"EAD_base"), _first(cap,"EAD_opt"), moneda, usdclp)
         kpi_row("RWA", _first(cap,"RWA_base"), _first(cap,"RWA_opt"), moneda, usdclp)
         kpi_row("K (Capital requerido)", _first(cap,"K_base"), _first(cap,"K_opt"), moneda, usdclp)
-        # EL/provisiones si existen
         el_a = _first(cap, "EL_base") if "EL_base" in cap.columns else _first(cap, "prov_base")
         el_b = _first(cap, "EL_opt")  if "EL_opt"  in cap.columns else _first(cap, "prov_opt")
         if not (np.isnan(el_a) and np.isnan(el_b)):
@@ -448,15 +431,14 @@ with tabs[4]:
     st.header("Guardrails (Resguardos)")
 
     st.markdown("""
-*Como a un niño:* Son las *reglas del juego*.  
-Aunque movamos pelotas y cambiemos precios, *nunca* rompemos estas reglas (Basilea, IFRS y de negocio).
+Consolidación de límites regulatorios (Basilea III, IFRS 9) y de negocio.  
+Se muestran umbrales, observados y evaluación automática de cumplimiento.
     """)
 
     gport = dfs.get("gr_port")
     gseg  = dfs.get("gr_seg")
     geval = dfs.get("gr_eval")
 
-    # Formato para % si aplica
     def _fmt_cols(df, cols):
         if df is None or df.empty: return df
         out = df.copy()

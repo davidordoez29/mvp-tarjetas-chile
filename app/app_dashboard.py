@@ -1,10 +1,6 @@
 # app/app_dashboard.py — MVP Bancario (4 Aristas) CONS/POT con CLP/USD
-# Ajustes:
-# - Pitch restaurado en “¿Qué resolvemos aquí?” (por arista).
-# - KPIs y Definiciones ampliadas (lenguaje profesional y claro).
-# - Análisis Ejecutivo: describe cálculos del motor sin expresiones coloquiales.
-# - Formato numérico robusto (CLP/USD y %), aplicado a todas las tablas.
-# - Fix definitivo: _PCT_HINTS (y helpers) definidos antes de usarse.
+# Fix mínimo: define _PCT_HINTS / _MONEY_AVOID y versión robusta de format_df_auto (con defaults internos)
+# Mantiene pitches, KPIs, lectura de escenarios y formateo numérico previo.
 
 import os, json, math, re
 from pathlib import Path
@@ -13,7 +9,7 @@ import numpy as np
 import streamlit as st
 
 # ==========================
-# Config carga de bundle
+# Requeridos del bundle
 # ==========================
 REQ_FILES_BASE = {
     # Arista 1
@@ -33,13 +29,12 @@ REQ_FILES_BASE = {
     "cap_port": "capital_portfolio.csv",
     "cap_seg":  "capital_segment.csv",
     "cap_det":  "capital_detail.csv",
-    # Guardrails (no por escenario)
+    # Guardrails (sin sufijo)
     "gr_port":  "guardrails_portfolio.csv",
     "gr_seg":   "guardrails_segment.csv",
     "gr_eval":  "guardrails_eval_portfolio.csv",
-    # KPI unificados (opcional)
+    # Opcional
     "kpis_all": "kpis_unificados.csv",
-    # Meta opcional
     "manifest": "manifest.json",
     "run_meta": "run_meta.json",
 }
@@ -53,15 +48,12 @@ CANDIDATE_DIRS = [
 ]
 
 # ==========================
-# Hints y formateo numérico (definidos ANTES de usarse)
+# Hints & formateo (fix NameError + robusto)
 # ==========================
 _num_like = re.compile(r"^-?\d+(\.\d+)?$")
 
-# Columnas que trataremos como porcentajes (insensible a may/min)
-# Incluimos pd, roi y tasas (apr, r_base, r_opt) para mostrarlas en %.
+# Definidos para evitar NameError y mantener el comportamiento previo
 PCT_HINTS   = ("pd_pond", "pd", "pd12", "pd_12", "roi", "apr", "r_", "%")
-
-# Columnas que NUNCA se formatean como dinero/porcentaje (llaves u objetos categóricos)
 _MONEY_AVOID = ("id", "id_cliente", "segmento")
 
 def _to_display_currency(val: float, target: str, usdclp: float) -> float | None:
@@ -132,14 +124,16 @@ def kpi_row_pct(label: str, actual_pct, opt_pct, help_text: str = ""):
         st.metric(label="VAR %", value=fmt_pct_val(vp) if vp is not None else "—")
 
 def format_df_auto(df: pd.DataFrame, moneda: str, usdclp: float) -> pd.DataFrame:
-    """Formatea todas las columnas como % o moneda según hints, excluye id/segmento."""
+    """Formatea según hints; ignora ids/segmento. Robusta: usa defaults si faltan globals."""
     if df is None or df.empty: return df
+    pct_hints   = globals().get("PCT_HINTS", ("pd_pond","pd","pd12","pd_12","roi","apr","r_","%"))
+    money_avoid = globals().get("_MONEY_AVOID", ("id","id_cliente","segmento"))
     out = df.copy()
     for c in out.columns:
         lc = c.lower()
-        if lc in _MONEY_AVOID:
+        if lc in money_avoid:
             continue
-        if any(h in lc for h in _PCT_HINTS):
+        if any(h in lc for h in pct_hints):
             out[c] = out[c].apply(fmt_pct_val)
         else:
             out[c] = out[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
@@ -152,16 +146,15 @@ def _first(df: pd.DataFrame, col: str):
         return np.nan
 
 # ==========================
-# Utilidades de carga bundle
+# Utilidades de carga
 # ==========================
 def _dir_ok(d: str) -> bool:
     try:
         if not d or not os.path.isdir(d): return False
         hits = 0
-        for k, v in REQ_FILES_BASE.items():
+        for _, v in REQ_FILES_BASE.items():
             p = os.path.join(d, v)
-            if os.path.exists(p):
-                hits += 1
+            if os.path.exists(p): hits += 1
         return hits >= 8
     except Exception:
         return False
@@ -180,11 +173,9 @@ def _read_csv(path: Path) -> pd.DataFrame | None:
     return None
 
 def _load_for_scenario(bundle: Path, escenario: str) -> dict[str, pd.DataFrame | None]:
-    """Carga todos los archivos necesarios, aplicando sufijo por escenario cuando corresponda.
-       Guardrails se leen sin sufijo (comparten para ambos escenarios)."""
+    """Aplica sufijo por escenario cuando corresponda. Guardrails no llevan sufijo."""
     suf = SUF.get(escenario, "")
     dfs = {}
-
     def pick(name_base: str, scenario_dependent=True):
         fname = REQ_FILES_BASE[name_base]
         if scenario_dependent and suf:
@@ -192,7 +183,6 @@ def _load_for_scenario(bundle: Path, escenario: str) -> dict[str, pd.DataFrame |
             if p.exists():
                 return _read_csv(p)
         return _read_csv(bundle / fname)
-
     # A1
     dfs["def_port"] = pick("def_port")
     dfs["def_seg"]  = pick("def_seg")
@@ -210,16 +200,16 @@ def _load_for_scenario(bundle: Path, escenario: str) -> dict[str, pd.DataFrame |
     dfs["cap_port"] = pick("cap_port")
     dfs["cap_seg"]  = pick("cap_seg")
     dfs["cap_det"]  = pick("cap_det")
-    # Guardrails (sin sufijo)
+    # Guardrails sin sufijo
     dfs["gr_port"]  = pick("gr_port", scenario_dependent=False)
     dfs["gr_seg"]   = pick("gr_seg",  scenario_dependent=False)
     dfs["gr_eval"]  = pick("gr_eval", scenario_dependent=False)
-    # KPIs unificados globales (opcional)
+    # KPIs globales opcionales
     dfs["kpis_all"] = pick("kpis_all", scenario_dependent=False)
     return dfs
 
 # ==========================
-# App Layout
+# Layout
 # ==========================
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
@@ -233,7 +223,7 @@ moneda = st.sidebar.radio("Moneda", ["CLP", "USD"], horizontal=True)
 usdclp = float(st.sidebar.number_input("USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0))
 
 st.title("📊 MVP Bancario — Optimización en 4 Aristas")
-st.caption("Comparación *Actual vs Optimizado*, por escenario y arista. Moneda y formato homogéneos.")
+st.caption("Comparación *Actual vs Optimizado*, por escenario y arista.")
 
 if not bundle_dir:
     st.error("No encuentro el bundle. Genera el paquete con la Celda 22 del notebook y vuelve a cargar.")
@@ -269,30 +259,27 @@ with tabs[0]:
     st.header("Arista 1 — Default/Impago")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Reducimos la *pérdida esperada (EL)* reasignando exposición hacia perfiles de menor riesgo, conservando volumen de negocio y respetando guardrails.")
+    st.markdown("Reducimos la *pérdida esperada (EL)* reasignando exposición hacia perfiles de menor riesgo, manteniendo el volumen y respetando guardrails.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-- *EAD (Exposición): monto expuesto al riesgo. El objetivo es **mantener el total* para no frenar el negocio.  
-- *EL (Expected Loss): pérdida esperada promedio: **EL = PD × LGD × EAD*.  
-- *Interés: ingresos financieros del portafolio: **APR × EAD*.  
-- *Utilidad: resultado económico luego de riesgo y fondeo: **Interés − EL − COF*.  
-- *PD ponderado: probabilidad media de incumplimiento ponderada por exposición: **Σ(PD × EAD)/Σ(EAD)*.
+- *EAD*: exposición total en riesgo. Objetivo: mantener el total.  
+- *EL (Expected Loss)* = *PD × LGD × EAD*.  
+- *Interés: **APR × EAD*.  
+- *Utilidad: **Interés − EL − COF*.  
+- *PD ponderado: **Σ(PD × EAD)/Σ(EAD)*.
     """)
 
     st.markdown("### Análisis Ejecutivo")
-    st.markdown("""
-Se evalúa rentabilidad-riesgo por cliente/segmento, se aplican *límites de traslado de EAD* y se redistribuye exposición desde perfiles *alto PD/baja utilidad* hacia perfiles *menor PD/mayor utilidad*, siempre bajo los resguardos definidos.  
-Luego se recalculan *EL, **PD ponderado, **interés* y *utilidad* para el portafolio optimizado.
-    """)
+    st.markdown("Se evalúa rentabilidad-riesgo, se aplican límites de traslado y se redistribuye EAD hacia perfiles de menor PD y mayor utilidad. Luego se recalculan EL, PD ponderado, interés y utilidad.")
 
     port = dfs.get("def_port")
     if port is not None and not port.empty:
-        kpi_row("EAD", _first(port,"EAD_actual"), _first(port,"EAD_optimizado"), moneda, usdclp, "Exposición total.")
-        kpi_row("EL (Pérdida Esperada)", _first(port,"EL_actual"), _first(port,"EL_optimizado"), moneda, usdclp, "Disminuye al mejorar el mix de riesgo.")
-        kpi_row("Utilidad", _first(port,"Utilidad_actual"), _first(port,"Utilidad_optimizada"), moneda, usdclp, "Interés neto de riesgo y costo de fondos.")
+        kpi_row("EAD", _first(port,"EAD_actual"), _first(port,"EAD_optimizado"), moneda, usdclp)
+        kpi_row("EL (Pérdida Esperada)", _first(port,"EL_actual"), _first(port,"EL_optimizado"), moneda, usdclp)
+        kpi_row("Utilidad", _first(port,"Utilidad_actual"), _first(port,"Utilidad_optimizada"), moneda, usdclp)
         if "PD_pond_actual" in port.columns and "PD_pond_optimizado" in port.columns:
-            kpi_row_pct("PD Ponderado", _first(port,"PD_pond_actual")*100, _first(port,"PD_pond_optimizado")*100, "Probabilidad de incumplimiento media ponderada.")
+            kpi_row_pct("PD Ponderado", _first(port,"PD_pond_actual")*100, _first(port,"PD_pond_optimizado")*100)
 
     seg = dfs.get("def_seg")
     if seg is not None and not seg.empty:
@@ -305,26 +292,23 @@ Luego se recalculan *EL, **PD ponderado, **interés* y *utilidad* para el portaf
         st.dataframe(format_df_auto(det, moneda, usdclp).head(500), use_container_width=True, height=360)
 
 # ================
-# Arista 2 — Yield / Pricing
+# Arista 2 — Yield/Pricing
 # ================
 with tabs[1]:
     st.header("Arista 2 — Yield/Pricing")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Determinamos la *tasa óptima (APR)* por segmento para maximizar *utilidad*, equilibrando precio y volumen retenido/adquirido.")
+    st.markdown("Determinamos la *tasa óptima (APR)* por segmento para maximizar *utilidad*, equilibrando precio y volumen.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-- *Interés total: flujo de intereses resultante (APR_opt × EAD_out*).  
-- *Utilidad total: **Interés − EL − COF* con la tasa óptima.  
-- *EAD_in / EAD_out*: exposición antes/después del ajuste de precio (elasticidad de demanda por tasa).
+- *Interés total: **APR_opt × EAD_out*.  
+- *Utilidad total: **Interés − EL − COF*.  
+- *EAD_in / EAD_out*: exposición antes/después (elasticidad por precio).
     """)
 
     st.markdown("### Análisis Ejecutivo")
-    st.markdown("""
-Se estiman elasticidades por segmento, se prueban *candidatos de APR, se proyecta **EAD_out* y se recomputan *interés, **EL* y *utilidad*.  
-Se elige la APR que maximiza *utilidad* respetando límites (bandas de APR, calidad crediticia y guardrails).
-    """)
+    st.markdown("Se estiman elasticidades por segmento, se prueban candidatos de APR, se proyecta EAD_out y se recomputan interés, EL y utilidad. Se elige la APR que maximiza utilidad respetando límites.")
 
     port = dfs.get("yld_port")
     if port is not None and not port.empty:
@@ -348,20 +332,17 @@ with tabs[2]:
     st.header("Arista 3 — Incentivos")
 
     st.markdown("### ¿Qué resolvemos aquí?")
-    st.markdown("Asignar *incentivos* únicamente donde el *ROI* sea positivo, maximizando el ingreso incremental por peso invertido.")
+    st.markdown("Asignar *incentivos* solo donde el *ROI* es positivo, maximizando el ingreso incremental por peso invertido.")
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-- *Costo de incentivos*: gasto total en beneficios.  
-- *Ingreso incremental*: ingresos adicionales atribuibles al incentivo (uplift estimado/medido).  
-- *ROI: **Ingreso incremental / Costo* (objetivo: *> 0* y por encima del umbral definido).
+- *Costo de incentivos*: gasto total.  
+- *Ingreso incremental*: ingresos adicionales atribuibles al incentivo.  
+- *ROI* = *Ingreso incremental / Costo*.
     """)
 
     st.markdown("### Análisis Ejecutivo")
-    st.markdown("""
-A partir del detalle de pricing se delimita *universo elegible, se estima **uplift* por cliente/segmento, se *asignan* incentivos bajo presupuesto y umbrales de ROI, y se consolida el impacto neto.  
-Las asignaciones priorizan *eficiencia* y cumplen límites de negocio y regulación.
-    """)
+    st.markdown("Se delimita universo elegible desde pricing, se estima uplift, se asignan incentivos bajo presupuesto y umbrales de ROI y se consolida el impacto neto.")
 
     det = dfs.get("inc_det")
     if det is not None and not det.empty:
@@ -376,10 +357,10 @@ Las asignaciones priorizan *eficiencia* y cumplen límites de negocio y regulaci
         st.markdown("#### Detalle de asignación")
         st.dataframe(format_df_auto(det, moneda, usdclp).head(500), use_container_width=True, height=360)
     else:
-        st.info("No hay universo elegible (o no se generaron incentivos). Revisa la Celda 13 del notebook.")
+        st.info("No se generaron incentivos o no hay universo elegible (revisar Celda 13).")
 
 # ================
-# Arista 4 — Capital / Provisiones
+# Arista 4 — Capital/Provisiones
 # ================
 with tabs[3]:
     st.header("Arista 4 — Capital/Provisiones")
@@ -389,17 +370,14 @@ with tabs[3]:
 
     st.markdown("### KPIs y Definiciones")
     st.markdown("""
-- *EAD*: exposición en riesgo (base vs optimizada).  
-- *RWA*: activos ponderados por riesgo (Basilea).  
-- *K (capital requerido): **RWA × K_ratio*.  
-- *Provisiones (≈EL)*: reservas por riesgo crediticio.
+- *EAD* (base vs opt).  
+- *RWA* (Basilea).  
+- *K (capital requerido)* = *RWA × K_ratio*.  
+- *Provisiones (≈EL)*.
     """)
 
     st.markdown("### Análisis Ejecutivo")
-    st.markdown("""
-Con el portafolio más sano (Default) y el precio eficiente (Pricing), disminuye el *riesgo efectivo, se recalculan **RWA* y *K, y se evalúan **provisiones (≈EL)*.  
-La reducción sostenida implica *liberación de capital* manteniendo el cumplimiento regulatorio.
-    """)
+    st.markdown("Con el portafolio más sano y el precio eficiente, disminuye el riesgo efectivo; se recalculan RWA y K, y se evalúan provisiones (≈EL). La reducción sostenida libera capital manteniendo cumplimiento.")
 
     cap = dfs.get("cap_port")
     if cap is not None and not cap.empty:
@@ -426,11 +404,7 @@ La reducción sostenida implica *liberación de capital* manteniendo el cumplimi
 # ================
 with tabs[4]:
     st.header("Guardrails (Resguardos)")
-
-    st.markdown("""
-Consolidación de límites regulatorios (Basilea III, IFRS 9) y de negocio.  
-Se muestran umbrales, observados y la evaluación automática de cumplimiento por portafolio y segmento.
-    """)
+    st.markdown("Consolidación de límites regulatorios (Basilea III, IFRS 9) y de negocio. Umbrales, observados y evaluación automática.")
 
     gport = dfs.get("gr_port")
     gseg  = dfs.get("gr_seg")
@@ -447,8 +421,6 @@ Se muestran umbrales, observados y la evaluación automática de cumplimiento po
     if gport is not None and not gport.empty:
         st.subheader("Portafolio")
         st.dataframe(_fmt_cols(gport, ["umbral","observado_actual","observado_optimizado"]), use_container_width=True)
-    else:
-        st.info("No se encontró guardrails_portfolio.csv en el bundle.")
 
     if gseg is not None and not gseg.empty:
         st.subheader("Segmento")

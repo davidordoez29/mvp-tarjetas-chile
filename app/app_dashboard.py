@@ -5,9 +5,6 @@ import numpy as np
 import streamlit as st
 from pathlib import Path
 
-# ==========================
-# Config inicial
-# ==========================
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
 REQ_FILES = {
@@ -43,9 +40,7 @@ CANDIDATE_DIRS = [
 
 _SCEN = {"Conservador": "", "Potenciado": "_agresivo"}
 
-# ==========================
-# Utils formato
-# ==========================
+# ========= Utils formato =========
 _num_like = re.compile(r"^-?\d+(\.\d+)?$")
 
 def _to_float_or_nan(v):
@@ -87,13 +82,11 @@ def kpi_row_money(label, actual, opt, moneda, usdclp, help_text=""):
     with c2:
         st.metric(f"{label} – Optimizado", fmt_money(opt, moneda, usdclp))
     with c3:
-        if actual not in [None,0,np.nan]:
-            try:
-                var = (float(opt)-float(actual))/float(actual)*100.0
-                st.metric("VAR %", fmt_pct(var))
-            except:
-                st.metric("VAR %", "—")
-        else:
+        try:
+            a=float(actual); o=float(opt)
+            var = (o-a)/a*100.0 if a!=0 else np.nan
+            st.metric("VAR %", fmt_pct(var))
+        except:
             st.metric("VAR %", "—")
 
 def kpi_row_pct(label, actual, opt, help_text=""):
@@ -106,8 +99,7 @@ def kpi_row_pct(label, actual, opt, help_text=""):
     with c3:
         try:
             a=_to_float_or_nan(actual); o=_to_float_or_nan(opt)
-            var=(o-a) if not (a==0) else np.nan
-            st.metric("Δ p.p.", fmt_pct(var))
+            st.metric("Δ p.p.", fmt_pct((o-a)))
         except:
             st.metric("Δ p.p.", "—")
 
@@ -124,9 +116,7 @@ def read_csv_safe(path):
         st.warning(f"Error leyendo {os.path.basename(path)}: {e}")
         return None
 
-# ==========================
-# Sidebar
-# ==========================
+# ========= Sidebar =========
 st.sidebar.title("⚙️ Configuración")
 bundle_dir = st.sidebar.text_input("📦 Ruta del bundle", value=autodetect_bundle()).strip()
 if not bundle_dir:
@@ -150,38 +140,29 @@ tabs = st.tabs([
     "Guardrails (Resguardos)"
 ])
 
-# Helpers lectura por clave
-def _p(fname):
-    return Path(bundle_dir) / fname
-
+def _p(fname): return Path(bundle_dir) / fname
 def get_df(key, mandatory=True):
     fname = REQ_FILES[key].format(S=suf) if "{S}" in REQ_FILES[key] else REQ_FILES[key]
     path = _p(fname)
     if not path.exists():
-        if mandatory:
-            st.error(f"Falta {fname} en el bundle.")
+        if mandatory: st.error(f"Falta {fname} en el bundle.")
         return None
     return read_csv_safe(path)
 
-# ================
-# Arista 1 — Default/Impago
-# ================
+# ===== A1 Default =====
 with tabs[0]:
     st.header("Arista 1 – Default/Impago")
     st.markdown("*¿Qué resolvemos?* Disminuimos la pérdida esperada (EL) reasignando exposición hacia segmentos más sanos, *sin* frenar el crecimiento.")
-    st.markdown("*KPIs:* EAD (exposición), *EL = PD × LGD × EAD, **Ingreso financiero* (interés devengado) y *Utilidad* (Ingreso − EL − costos). El *PD ponderado* se computa con peso EAD.")
-    port = get_df("def_port")
-    det  = get_df("def_det")
+    st.markdown("*KPIs:* EAD (exposición), *EL = PD × LGD × EAD, **Ingreso financiero* (interés) y *Utilidad* (Ingreso − EL − costos). *PD ponderado* con peso EAD.")
+    port = get_df("def_port"); det = get_df("def_det")
     if port is not None and not port.empty:
         def g(c): return float(port[c].iloc[0]) if c in port.columns else np.nan
-        kpi_row_money("EAD", g("EAD_actual"), g("EAD_optimizado"), moneda, usdclp, "Exposición total (EAD). Ideal: estable o ↑ levemente.")
+        kpi_row_money("EAD", g("EAD_actual"), g("EAD_optimizado"), moneda, usdclp, "Exposición total. Ideal: estable o ↑ levemente.")
         kpi_row_money("EL (Pérdida Esperada)", g("EL_actual"), g("EL_optimizado"), moneda, usdclp, "Menor EL es deseable a igual crecimiento.")
         kpi_row_money("Utilidad", g("Utilidad_actual"), g("Utilidad_optimizada"), moneda, usdclp, "Utilidad = Ingreso − EL − costos.")
         if "PD_pond_actual" in port.columns and "PD_pond_optimizado" in port.columns:
-            kpi_row_pct("PD ponderado (p.p.)", float(port["PD_pond_actual"].iloc[0])*100.0, float(port["PD_pond_optimizado"].iloc[0])*100.0,
-                        "Promedio de PD ponderado por EAD. Debe bajar.")
+            kpi_row_pct("PD ponderado (p.p.)", float(port["PD_pond_actual"].iloc[0])*100.0, float(port["PD_pond_optimizado"].iloc[0])*100.0)
     if det is not None and not det.empty:
-        # formateo de columnas monetarias y %
         dfv = det.copy()
         for c in ["r_base","r_final","income_base","income_final","EL_base","EL_final","e_base","e_out"]:
             if c in dfv.columns:
@@ -189,19 +170,16 @@ with tabs[0]:
         st.markdown("*Detalle por cliente (formateado)*")
         st.dataframe(dfv.head(500), use_container_width=True)
 
-# ================
-# Arista 2 — Yield/Pricing
-# ================
+# ===== A2 Yield =====
 with tabs[1]:
     st.header("Arista 2 – Yield/Pricing")
-    st.markdown("*¿Qué resolvemos?* Encontramos la tasa (APR) que maximiza utilidad, equilibrando precio y volumen (elasticidad).")
-    st.markdown("*KPIs:* *Ingreso total* (interés tras elasticidad), *Utilidad total* y *EAD_in → EAD_out* (volumen resp).")
-    port = get_df("yld_port")
-    det  = get_df("yld_det")
+    st.markdown("*¿Qué resolvemos?* Maximizamos utilidad equilibrando precio y volumen (elasticidad).")
+    st.markdown("*KPIs:* *Ingreso total* (interés tras elasticidad), *Utilidad total* y *EAD_in → EAD_out*.")
+    port = get_df("yld_port"); det = get_df("yld_det")
     if port is not None and not port.empty:
         def g(c): return float(port[c].iloc[0]) if c in port.columns else np.nan
-        kpi_row_money("Ingreso total", g("ingreso_base"), g("ingreso_opt"), moneda, usdclp, "Ingreso tras respuesta de volumen.")
-        kpi_row_money("Utilidad total", g("utilidad_base"), g("utilidad_opt"), moneda, usdclp, "Tiene en cuenta EL y costos.")
+        kpi_row_money("Ingreso total", g("ingreso_base"), g("ingreso_opt"), moneda, usdclp)
+        kpi_row_money("Utilidad total", g("utilidad_base"), g("utilidad_opt"), moneda, usdclp)
         if "EAD_in" in port.columns and "EAD_out" in port.columns:
             c1,c2,c3 = st.columns([1.0,1.0,0.6])
             with c1: st.metric("EAD in", fmt_money(port["EAD_in"].iloc[0], moneda, usdclp))
@@ -219,14 +197,11 @@ with tabs[1]:
                 dfv[c] = dfv[c].apply(lambda x: fmt_money(x, moneda, usdclp))
         st.dataframe(dfv.head(500), use_container_width=True)
 
-# ================
-# Arista 3 — Incentivos
-# ================
+# ===== A3 Incentivos =====
 with tabs[2]:
     st.header("Arista 3 – Incentivos")
     st.markdown("*¿Qué resolvemos?* Invertimos incentivos *sólo* donde el *ROI* es positivo, con presupuesto y caps por segmento.")
     st.markdown("*KPIs:* *Costo incentivos, **Ingreso incremental* y *ROI* (Ingreso/Costo).")
-
     det = get_df("inc_det", mandatory=False)
     summ = get_df("inc_sum", mandatory=False)
     sens = get_df("inc_sens", mandatory=False)
@@ -241,29 +216,24 @@ with tabs[2]:
         c1.metric("Costo incentivos", fmt_money(costo, moneda, usdclp))
         c2.metric("Ingreso incremental", fmt_money(ingr, moneda, usdclp))
         c3.metric("ROI", fmt_pct(roi))
-
         if det is not None and not det.empty:
             dfv = det.copy()
-            for c in ["e_out","r_opt","costo_incentivo","ingreso_incremental","roi"]:
+            for c in ["e_out","e_eff","r_opt","costo_incentivo","ingreso_incremental","roi"]:
                 if c in dfv.columns:
                     if c=="roi":
                         dfv[c] = dfv[c].apply(lambda x: fmt_pct(float(x)*100.0 if pd.notna(x) else np.nan))
                     else:
                         dfv[c] = dfv[c].apply(lambda x: fmt_money(x, moneda, usdclp))
             st.dataframe(dfv.head(500), use_container_width=True)
-
         if sens is not None and not sens.empty:
             st.markdown("*Sensibilidad ROI vs umbral*")
             st.dataframe(sens, use_container_width=True)
 
-# ================
-# Arista 4 — Capital/Provisiones
-# ================
+# ===== A4 Capital =====
 with tabs[3]:
     st.header("Arista 4 – Capital/Provisiones")
     st.markdown("*¿Qué resolvemos?* Hacemos más eficiente el capital requerido (RWA, K) y provisiones (≈EL).")
-    st.markdown("*KPIs:* *EAD, **RWA, **K (ratio)* y *Provisiones (EL)*.")
-
+    st.markdown("*KPIs:* *EAD, **RWA, **K (capital)* y *Provisiones (EL)*.")
     port = get_df("cap_port")
     if port is not None and not port.empty:
         def g(c): return float(port[c].iloc[0]) if c in port.columns else np.nan
@@ -272,14 +242,10 @@ with tabs[3]:
         kpi_row_money("K (capital)", g("K_base"), g("K_opt"), moneda, usdclp)
         kpi_row_money("Provisiones (EL)", g("EL_base"), g("EL_opt"), moneda, usdclp)
 
-# ================
-# Guardrails
-# ================
+# ===== Guardrails =====
 with tabs[4]:
     st.header("Guardrails (Resguardos)")
-    gp = _p(REQ_FILES["guard_port"])
-    gs = _p(REQ_FILES["guard_seg"])
-    ge = _p(REQ_FILES["guard_eval"])
+    gp = _p(REQ_FILES["guard_port"]); gs = _p(REQ_FILES["guard_seg"]); ge = _p(REQ_FILES["guard_eval"])
     if not gp.exists() and not gs.exists() and not ge.exists():
         st.info("No encuentro guardrails en el bundle. Asegura Celda 15, 16 y 22.")
     else:
@@ -303,6 +269,5 @@ with tabs[4]:
             if df is not None:
                 st.dataframe(df, use_container_width=True)
 
-# Footer
 st.markdown("---")
 st.caption("© MVP Bancario — Motor de Optimización (4 aristas integradas).")

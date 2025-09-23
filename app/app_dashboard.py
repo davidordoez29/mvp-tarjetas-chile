@@ -159,50 +159,77 @@ def format_df_auto(df: pd.DataFrame, moneda: str, usdclp: float):
     return df2
 
 # =========================================
-# Carga bundle
+# Carga bundle (robusto + diagnóstico)
 # =========================================
-def _dir_ok(d: str) -> bool:
+def _dir_ok(d: str|Path) -> bool:
     try:
-        if not d or not os.path.isdir(d): return False
-        # basta con que existan algunos archivos clave
-        hits = 0
-        for patt in [
+        if not d: return False
+        p = Path(str(d))
+        if not p.is_dir(): return False
+        # con 1 archivo clave basta para considerarlo bundle
+        keys = [
             REQ["A1"]["portfolio"].format(SFX=""),
             REQ["A2"]["portfolio"].format(SFX=""),
-            REQ["A4"]["portfolio"].format(SFX=""),
-        ]:
-            if os.path.exists(os.path.join(d, patt)):
-                hits += 1
-        return hits >= 1
+            REQ["A4"]["portfolio"].format(SFX="")
+        ]
+        return any((p / k).exists() for k in keys)
     except Exception:
         return False
 
-def autodetect_bundle() -> str | None:
+def autodetect_bundle() -> Path | None:
+    # prioridad: env var, luego candidatas
+    env = os.environ.get("BUNDLE_DIR", "").strip()
+    if _dir_ok(env): return Path(env)
     for d in CANDIDATE_DIRS:
-        if _dir_ok(d): return d
+        if _dir_ok(d): return Path(d)
+    # fallback: buscar carpeta llamada dashboard_bundle en subárbol actual
+    here = Path.cwd()
+    for p in [here, here.parent, here.parent.parent]:
+        cand = list(p.rglob("dashboard_bundle"))
+        for c in cand:
+            if _dir_ok(c):
+                return c
     return None
 
-def _read_csv(path: Path):
-    if not path.exists(): return None
-    try:
-        return pd.read_csv(path)
-    except Exception as e:
-        st.warning(f"⚠️ Error leyendo {path.name}: {e}")
-        return None
+st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
-def load_by_arista(bundle_dir: Path, arista: str, scenario_suffix: str):
-    """Devuelve dict con dataframes de la arista dada, respetando sufijo de escenario."""
-    dfs = {}
-    spec = REQ[arista]
-    for key, patt in spec.items():
-        # guardrails no llevan sufijo
-        if arista == "GR":
-            fname = patt
-        else:
-            fname = patt.format(SFX=scenario_suffix)
-        p = bundle_dir / fname
-        dfs[key] = _read_csv(p)
-    return dfs
+st.sidebar.title("⚙️ Configuración")
+
+# Autodetección y entrada manual
+_auto = autodetect_bundle()
+bundle_dir_in = st.sidebar.text_input(
+    "📦 Ruta del bundle",
+    value=str(_auto) if _auto else "",
+    help="Ej: /content/out/dashboard_bundle"
+).strip()
+
+# Permitir BUNDLE_DIR por env var si el input está vacío
+if not bundle_dir_in:
+    env_dir = os.environ.get("BUNDLE_DIR", "").strip()
+    bundle_dir_in = env_dir
+
+bundle_dir = Path(bundle_dir_in) if bundle_dir_in else None
+
+# Diagnóstico visible
+if not bundle_dir or not bundle_dir.exists():
+    st.error("No encuentro el bundle en la ruta proporcionada.")
+    st.info(f"Ruta ingresada: {bundle_dir_in or '(vacía)'}")
+    st.write("*Sugerencias:*")
+    st.write("- Ejecuta la *Celda 22* del notebook para generar /content/out/dashboard_bundle.")
+    st.write("- Copia la ruta exacta aquí, o exporta BUNDLE_DIR como variable de entorno antes de lanzar la app.")
+    st.stop()
+elif not _dir_ok(bundle_dir):
+    st.error("La carpeta existe pero no luce como un bundle válido (faltan archivos clave).")
+    # listar archivos para que veas qué hay
+    files = sorted([p.name for p in bundle_dir.glob("*.csv")])[:30]
+    st.write("Archivos vistos (primeros 30):", files)
+    st.info("Corre Celda 22 y verifica que estén, por ejemplo: default_portfolio.csv, yield_portfolio.csv…")
+    st.stop()
+else:
+    # Mini log de bienvenida
+    some = sorted([p.name for p in bundle_dir.glob('*.csv')])[:8]
+    st.caption(f"Bundle OK → {bundle_dir}")
+    st.caption("Muestras de archivos: " + ", ".join(some))
 
 # =========================================
 # App — Sidebar

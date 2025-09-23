@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wdof/spec/minimal_operativo.schema.json",
+  "title": "WDOF \u2013 Schema M\u00ednimo Operativo (A1/A2/A4) + Cond. A3",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id_cliente": {
+      "type": "string"
+    },
+    "producto": {
+      "type": "string"
+    },
+    "segmento": {
+      "type": "string"
+    },
+    "moneda": {
+      "type": "string",
+      "enum": [
+        "CLP",
+        "USD"
+      ]
+    },
+    "fecha_corte": {
+      "type": "string",
+      "format": "date"
+    },
+    "periodo_reporte": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}$"
+    },
+    "e_base": {
+      "type": "number",
+      "minimum": 0
+    },
+    "PD_12m": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "LGD_adj": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "dpd": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "r_base": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "COF_base": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "clase_exposicion_basilea": {
+      "type": "string"
+    },
+    "K_ratio": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.3
+    },
+    "id_cuenta": {
+      "type": "string"
+    },
+    "take_up_hist": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "elasticidad_precio": {
+      "type": "number",
+      "minimum": -10,
+      "maximum": 10
+    },
+    "prob_contactabilidad": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "costo_unit_incentivo": {
+      "type": "number",
+      "minimum": 0
+    },
+    "fx_rate_to_base": {
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "id_cliente",
+    "producto",
+    "segmento",
+    "moneda",
+    "fecha_corte",
+    "periodo_reporte",
+    "e_base",
+    "PD_12m",
+    "LGD_adj",
+    "dpd",
+    "r_base",
+    "COF_base",
+    "clase_exposicion_basilea",
+    "K_ratio"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "moneda": {
+            "const": "USD"
+          }
+        },
+        "required": [
+          "moneda"
+        ]
+      },
+      "then": {
+        "properties": {
+          "fx_rate_to_base": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": []
+      }
+    }
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "take_up_hist"
+      ]
+    },
+    {
+      "required": [
+        "elasticidad_precio"
+      ]
+    },
+    {
+      "required": [
+        "prob_contactabilidad"
+      ]
+    },
+    {
+      "required": [
+        "costo_unit_incentivo"
+      ]
+    },
+    {
+      "not": {
+        "required": [
+          "take_up_hist",
+          "elasticidad_precio",
+          "prob_contactabilidad",
+          "costo_unit_incentivo"
+        ]
+      }
+    }
+  ]
+}

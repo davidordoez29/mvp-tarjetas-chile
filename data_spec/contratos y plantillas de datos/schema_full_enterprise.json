@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wdof/spec/full_enterprise.schema.json",
+  "title": "WDOF \u2013 Schema Enterprise FULL (91 campos)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id_cliente": {
+      "type": "string"
+    },
+    "id_cuenta": {
+      "type": "string"
+    },
+    "producto": {
+      "type": "string"
+    },
+    "subproducto": {
+      "type": "string"
+    },
+    "moneda": {
+      "type": "string",
+      "enum": [
+        "CLP",
+        "USD"
+      ]
+    },
+    "portfolio_id": {
+      "type": "string"
+    },
+    "pais_iso": {
+      "type": "string"
+    },
+    "fecha_corte": {
+      "type": "string",
+      "format": "date"
+    },
+    "periodo_reporte": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}$"
+    },
+    "fecha_originacion": {
+      "type": "string",
+      "format": "date"
+    },
+    "vintage_meses": {
+      "type": "integer"
+    },
+    "meses_en_libro": {
+      "type": "integer"
+    },
+    "madurez_restante_meses": {
+      "type": "integer"
+    },
+    "segmento": {
+      "type": "string"
+    },
+    "subsegmento": {
+      "type": "string"
+    },
+    "antiguedad_cliente_meses": {
+      "type": "integer"
+    },
+    "region": {
+      "type": "string"
+    },
+    "edad": {
+      "type": "integer"
+    },
+    "situacion_laboral": {
+      "type": "string"
+    },
+    "plazo_original_meses": {
+      "type": "integer"
+    },
+    "plazo_restante_meses": {
+      "type": "integer"
+    },
+    "canal_originacion": {
+      "type": "string"
+    },
+    "estado_contrato": {
+      "type": "string"
+    },
+    "ciclo_facturacion": {
+      "type": "string"
+    },
+    "dia_corte": {
+      "type": "integer"
+    },
+    "limite_credito": {
+      "type": "number",
+      "minimum": 0
+    },
+    "saldo_utilizado": {
+      "type": "number",
+      "minimum": 0
+    },
+    "utilizacion_pct": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "e_base": {
+      "type": "number",
+      "minimum": 0
+    },
+    "ppal_vencido": {
+      "type": "number",
+      "minimum": 0
+    },
+    "interes_vencido": {
+      "type": "number",
+      "minimum": 0
+    },
+    "comisiones_mensuales": {
+      "type": "number",
+      "minimum": 0
+    },
+    "costos_operativos_mens": {
+      "type": "number",
+      "minimum": 0
+    },
+    "r_base": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "tasa_efectiva_mensual": {
+      "type": "number"
+    },
+    "COF_base": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "spread_base_bps": {
+      "type": "integer"
+    },
+    "tasa_referencia": {
+      "type": "number"
+    },
+    "tasa_mora": {
+      "type": "number"
+    },
+    "pricing_band": {
+      "type": "string"
+    },
+    "elasticidad_precio": {
+      "type": "number",
+      "minimum": -10.0,
+      "maximum": 10.0
+    },
+    "dpd": {
+      "type": "integer"
+    },
+    "dpd_max_12m": {
+      "type": "integer"
+    },
+    "SICR_score": {
+      "type": "number"
+    },
+    "stage_ifrs9": {
+      "type": "integer"
+    },
+    "PD_12m": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "PD_lifetime_24m": {
+      "type": "number"
+    },
+    "PD_lifetime_36m": {
+      "type": "number"
+    },
+    "LGD_adj": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "EAD_CCF": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 5.0
+    },
+    "score_interno": {
+      "type": "number"
+    },
+    "clase_exposicion_basilea": {
+      "type": "string"
+    },
+    "RW_estandar": {
+      "type": "number"
+    },
+    "K_ratio": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.3
+    },
+    "buffer_conservacion": {
+      "type": "number"
+    },
+    "buffer_contraciclico": {
+      "type": "number"
+    },
+    "rating_IRB": {
+      "type": "string"
+    },
+    "madurez_IRB_M": {
+      "type": "number"
+    },
+    "corr_IRB_R": {
+      "type": "number"
+    },
+    "colateral_tipo_reg": {
+      "type": "string"
+    },
+    "pago_minimo_ratio": {
+      "type": "number"
+    },
+    "revolvencia": {
+      "type": "number"
+    },
+    "saldo_prom_12m": {
+      "type": "number"
+    },
+    "max_utilizacion_12m": {
+      "type": "number"
+    },
+    "curvatura_saldo": {
+      "type": "number"
+    },
+    "prob_contactabilidad": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "tiene_garantia": {
+      "type": "boolean"
+    },
+    "tipo_garantia": {
+      "type": "string"
+    },
+    "valor_garantia": {
+      "type": "number",
+      "minimum": 0
+    },
+    "LTV": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 5.0
+    },
+    "canal_gestion": {
+      "type": "string"
+    },
+    "precio_lista": {
+      "type": "number"
+    },
+    "descuento_otorgado": {
+      "type": "number"
+    },
+    "take_up_hist": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "propension_compra": {
+      "type": "number"
+    },
+    "aplica_incentivo": {
+      "type": "boolean"
+    },
+    "catalogo_incentivo": {
+      "type": "string"
+    },
+    "costo_unit_incentivo": {
+      "type": "number",
+      "minimum": 0
+    },
+    "ingreso_incremental_esp": {
+      "type": "number",
+      "minimum": 0
+    },
+    "cap_presupuesto_cliente": {
+      "type": "number"
+    },
+    "inflacion_anual": {
+      "type": "number"
+    },
+    "desempleo": {
+      "type": "number"
+    },
+    "TPM": {
+      "type": "number"
+    },
+    "fx_rate_to_base": {
+      "type": "number"
+    },
+    "shock_macro_id": {
+      "type": "string"
+    },
+    "fuente_sistema": {
+      "type": "string"
+    },
+    "version_registro": {
+      "type": "string"
+    },
+    "fecha_extraccion": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "flag_reestructurado": {
+      "type": "boolean"
+    },
+    "flag_refinanciado": {
+      "type": "boolean"
+    },
+    "flag_fraude": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id_cliente",
+    "producto",
+    "moneda",
+    "fecha_corte",
+    "periodo_reporte",
+    "fecha_originacion",
+    "vintage_meses",
+    "meses_en_libro",
+    "segmento",
+    "plazo_original_meses",
+    "limite_credito",
+    "saldo_utilizado",
+    "e_base",
+    "r_base",
+    "COF_base",
+    "dpd",
+    "PD_12m",
+    "LGD_adj",
+    "clase_exposicion_basilea",
+    "K_ratio"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "take_up_hist"
+      ]
+    },
+    {
+      "required": [
+        "elasticidad_precio"
+      ]
+    },
+    {
+      "required": [
+        "prob_contactabilidad"
+      ]
+    },
+    {
+      "required": [
+        "costo_unit_incentivo"
+      ]
+    },
+    {
+      "not": {
+        "required": [
+          "take_up_hist",
+          "elasticidad_precio",
+          "prob_contactabilidad",
+          "costo_unit_incentivo"
+        ]
+      }
+    }
+  ]
+}

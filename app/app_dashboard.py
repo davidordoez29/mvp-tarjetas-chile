@@ -229,40 +229,78 @@ else:
     st.caption(f"Bundle OK → {bundle_dir}")
     st.caption("Muestras de archivos: " + ", ".join(some))
 
-# =========================================
-# App — Sidebar
-# =========================================
+# ==========================
+# Sidebar / Configuración
+# ==========================
 st.set_page_config(page_title="MVP Bancario – 4 Aristas", layout="wide")
 
+# Autodetección segura del bundle (no hacer rglob en /proc, etc.)
+def _dir_ok(d: str) -> bool:
+    try:
+        if not d or not os.path.isdir(d):
+            return False
+        hits = sum(os.path.exists(os.path.join(d, v)) for v in REQ_FILES.values())
+        # con 6+ archivos ya consideramos que es un bundle válido
+        return hits >= 6
+    except Exception:
+        return False
+
+def autodetect_bundle() -> str | None:
+    # revisa solo rutas “seguras”
+    safe_candidates = [
+        os.environ.get("BUNDLE_DIR", "").strip(),
+        "/content/out/dashboard_bundle",
+        "./out/dashboard_bundle",
+        "./dashboard_bundle",
+    ]
+    for d in safe_candidates:
+        if _dir_ok(d):
+            return d
+    return None
+
 st.sidebar.title("⚙️ Configuración")
-default_dir = autodetect_bundle()
+
+_auto = autodetect_bundle()
 bundle_dir_in = st.sidebar.text_input(
     "📦 Ruta del bundle",
-    value=(default_dir or ""),
+    value=_auto or "",
     help="Ej: /content/out/dashboard_bundle",
+    key="bundle_dir_input",
 ).strip()
-bundle_dir = Path(bundle_dir_in) if bundle_dir_in else (Path(default_dir) if default_dir else None)
 
-if not bundle_dir or not bundle_dir.exists():
-    st.error("No encuentro el bundle. Genera el paquete en el notebook (Celda 22) y vuelve a cargar.")
-    st.stop()
+# Si queda vacío, usar autodetección
+bundle_dir = bundle_dir_in or _auto
 
-scenario = st.sidebar.radio("Escenario", ["Conservador", "Potenciado"], horizontal=True)
-SFX = "" if scenario == "Conservador" else "_agresivo"
+# Escenario y moneda (keys únicas)
+escenario = st.sidebar.radio(
+    "Escenario",
+    ["Conservador", "Potenciado"],
+    horizontal=True,
+    key="escenario_radio",
+)
+moneda = st.sidebar.radio(
+    "Moneda a visualizar",
+    ["CLP", "USD"],
+    horizontal=True,
+    key="moneda_radio",
+)
+usdclp = float(
+    st.sidebar.number_input(
+        "USDCLP (1 USD = ? CLP)",
+        min_value=1.0,
+        value=900.0,
+        step=1.0,
+        key="usdclp_number",
+    )
+)
 
-moneda = st.sidebar.radio("Moneda a visualizar", ["CLP", "USD"], horizontal=True)
-usdclp = float(st.sidebar.number_input("USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0))
-
-st.title("📊 MVP Bancario — Optimización en 4 Aristas")
-st.caption("Modelo matemático aplicado sobre un portafolio. Comparación Actual vs Optimizado con guardrails IFRS9/Basilea/Negocio.")
-
-tabs = st.tabs([
-    "Arista 1 – Default/Impago",
-    "Arista 2 – Yield/Pricing",
-    "Arista 3 – Incentivos",
-    "Arista 4 – Capital/Provisiones",
-    "Guardrails (Resguardos)"
-])
+# (Opcional) contrato de dashboard; si lo mantienes, dale key única también
+contract_path = st.sidebar.text_input(
+    "Opcional: dashboard_contract.json",
+    value="",
+    help="Ruta a un contrato de columnas para validación opcional",
+    key="contract_path_input",
+)
 
 # =========================================
 # 📍 Arista 1 – Default / Impago

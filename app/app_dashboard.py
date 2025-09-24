@@ -305,6 +305,17 @@ contract_path = st.sidebar.text_input(
 # =========================================
 # 📍 Arista 1 – Default / Impago
 # =========================================
+# ================================
+# Tabs principales del dashboard
+# ================================
+tabs = st.tabs([
+    "📊 Portafolio",
+    "📈 Segmentos",
+    "⚙️ Incentivos",
+    "🏦 Capital",
+    "🛡️ Guardrails",
+    "🔍 Verificación"
+])
 with tabs[0]:
     st.header("Arista 1 – Default/Impago")
 

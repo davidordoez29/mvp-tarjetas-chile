@@ -12,16 +12,11 @@ import streamlit as st
 st.set_page_config(page_title="MVP Bancario — 4 Aristas", layout="wide")
 
 # =====================================
-# Hints de formateo (idempotentes)
+# Constantes de formateo (evita NameError y unifica estilo)
 # =====================================
-if "_PCT_HINTS" not in globals():
-    PCT_HINTS = ["%", "pct", "porc", "pd", "lgd", "roi", "var_%", "pd_pond", "k_ratio", "ratio", "margen"]
-
-if "_MONEY_HINTS" not in globals():
-    MONEY_HINTS = ["monto", "ead", "el", "ingreso", "util", "capital", "k_", "income", "cost", "exposure", "saldo", "rwa"]
-
-if "_RATE_HINTS" not in globals():
-    _RATE_HINTS = ["apr", "tasa", "rate", "cof", "r_base", "r_opt"]
+PCT_HINTS   = ["%", "pct", "porc", "pd", "lgd", "roi", "var_%", "pd_pond", "k_ratio"]
+MONEY_HINTS = ["monto","ead","el","ingreso","util","capital","k_","income","cost","exposure","saldo","rwa"]
+_RATE_HINTS  = ["apr","tasa","rate","cof","r_base","r_opt"]
 
 # =====================================
 # Utilidades de Paths / Bundle
@@ -42,12 +37,8 @@ def autodetect_bundle_safe() -> Path | None:
         if not c:
             continue
         p = Path(c).resolve()
-        try:
-            if p.is_dir() and len(list(p.glob("*.csv"))) >= 3:
-                return p
-        except Exception:
-            # Si alguna ruta no es accesible, la saltamos silenciosamente
-            pass
+        if p.is_dir() and len(list(p.glob("*.csv"))) >= 3:
+            return p
     return None
 
 def sidebar_bundle_picker(default_path: Path | None):
@@ -56,7 +47,7 @@ def sidebar_bundle_picker(default_path: Path | None):
     bundle_txt = st.sidebar.text_input(
         "📦 Ruta del bundle",
         value=default_txt,
-        key="bundle_path_input_unique",
+        key="bundle_path_input_v1",
         help="Ej: /content/out/dashboard_bundle",
     ).strip()
     bundle_dir = Path(bundle_txt).resolve() if bundle_txt else None
@@ -68,16 +59,16 @@ def sidebar_bundle_picker(default_path: Path | None):
         "Escenario",
         options=["Conservador", "Potenciado"],
         horizontal=True,
-        key="scenario_radio_unique",
+        key="scenario_radio_v1",
     )
     currency = st.sidebar.radio(
         "Moneda",
         options=["CLP", "USD"],
         horizontal=True,
-        key="currency_radio_unique",
+        key="currency_radio_v1",
     )
     usdclp = float(st.sidebar.number_input(
-        "USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0, key="usdclp_input_unique"
+        "USDCLP (1 USD = ? CLP)", min_value=1.0, value=900.0, step=1.0, key="usdclp_input_v1"
     ))
     return bundle_dir, scenario, currency, usdclp
 
@@ -85,7 +76,7 @@ def suffix_from_scenario(scenario: str) -> str:
     return "" if scenario.strip().lower().startswith("conserv") else "_agresivo"
 
 def quick_bundle_check(bundle_dir: Path):
-    samples = [p.name for p in (bundle_dir.glob("*.csv"))][:8]
+    samples = [p.name for p in (bundle_dir.glob("*.csv"))][:10]
     st.caption(f"Bundle OK → {bundle_dir}")
     if samples:
         st.caption(f"Muestras de archivos: {', '.join(samples)}")
@@ -119,12 +110,8 @@ def load_by_arista(bundle_dir: Path, arista: str, suffix: str = "") -> dict[str,
     return out
 
 # =====================================
-# Formateo numérico y helpers
+# Helpers de formateo
 # =====================================
-def _to_display_currency(val: float, target: str, usdclp: float) -> float:
-    if pd.isna(val): return np.nan
-    return (float(val) / float(usdclp)) if target.upper() == "USD" else float(val)
-
 _num_like = re.compile(r"^-?\d+(\.\d+)?$")
 
 def _to_float_or_nan(v):
@@ -138,11 +125,14 @@ def _to_float_or_nan(v):
         return np.nan
     return np.nan
 
+def _to_display_currency(val: float, target: str, usdclp: float) -> float:
+    if pd.isna(val): return np.nan
+    return (float(val) / float(usdclp)) if target.upper() == "USD" else float(val)
+
 def fmt_money_val(val, target: str, usdclp: float) -> str:
     if isinstance(val, str):
         v = val.strip()
         if v == "" or v.upper() == "N/A": return "—"
-        # si ya viene formateado, lo dejamos
         return v
     if val is None or (isinstance(val, float) and math.isnan(val)): return "—"
     x = _to_display_currency(float(val), target, usdclp)
@@ -156,10 +146,8 @@ def fmt_money_val(val, target: str, usdclp: float) -> str:
 def fmt_pct_val(val):
     if isinstance(val, str):
         s = val.strip()
-        if s.endswith("%"):
-            return s.replace(".", ",")
-        if not _num_like.match(s.replace(",", ".")):
-            return s
+        if s.endswith("%"): return s.replace(".", ",")
+        if not _num_like.match(s.replace(",", ".")): return s
     x = _to_float_or_nan(val)
     if np.isnan(x):
         return "—" if (val is None or (isinstance(val, float) and math.isnan(val))) else str(val)
@@ -170,6 +158,32 @@ def var_pct(a, b):
     if np.isnan(a) or a == 0 or np.isnan(b): return np.nan
     return (b - a) / a * 100.0
 
+def format_df_auto(df: pd.DataFrame, moneda: str, usdclp: float):
+    """Formatea heurísticamente por nombre de columna."""
+    if df is None or df.empty: return df
+    out = df.copy()
+    lower = {c: c.lower() for c in out.columns}
+    for c in out.columns:
+        lc = lower[c]
+        if any(h in lc for h in _PCT_HINTS):
+            out[c] = out[c].apply(fmt_pct_val); continue
+        if any(h in lc for h in _MONEY_HINTS):
+            out[c] = out[c].apply(lambda v: fmt_money_val(v, moneda, usdclp)); continue
+        if any(h in lc for h in RATE_HINTS) or lc.startswith("r"):
+            out[c] = out[c].apply(lambda v: fmt_pct_val(_to_float_or_nan(v)*100.0 if pd.notna(_to_float_or_nan(v)) else v))
+    return out
+
+def pick(df: pd.DataFrame, names: list[str], default=None):
+    for n in names:
+        if n in df.columns: return n
+    return default
+
+def _first(df: pd.DataFrame, col: str):
+    return (df[col].iloc[0] if col and col in df.columns and not df.empty else np.nan)
+
+# =====================================
+# Métricas (widgets)
+# =====================================
 def kpi_row_money(label: str, a, b, moneda: str, usdclp: float, help_text: str = ""):
     c1, c2, c3 = st.columns([1.2, 1.2, 0.8])
     with c1:
@@ -191,37 +205,6 @@ def kpi_row_pct(label: str, a_pct, b_pct, help_text: str = ""):
     with c3:
         vp = var_pct(a_pct, b_pct)
         st.metric(label="VAR %", value=fmt_pct_val(vp) if pd.notna(vp) else "—")
-
-def format_df_auto(df: pd.DataFrame, moneda: str, usdclp: float):
-    """Formatea heurísticamente por nombre de columna."""
-    if df is None or df.empty: return df
-    out = df.copy()
-    cols = list(out.columns)
-    lower = {c: c.lower() for c in cols}
-
-    pct_hints   = _PCT_HINTS
-    money_hints = _MONEY_HINTS
-    rate_hints  = _RATE_HINTS
-
-    for c in cols:
-        lc = lower[c]
-        # porcentaje
-        if any(h in lc for h in pct_hints):
-            out[c] = out[c].apply(fmt_pct_val)
-            continue
-        # moneda / montos
-        if any(h in lc for h in money_hints):
-            out[c] = out[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
-            continue
-        # tasa (apr/r_base/r_opt/cof)
-        if any(h in lc for h in rate_hints) or lc.startswith("r_"):
-            out[c] = out[c].apply(lambda v: fmt_pct_val(_to_float_or_nan(v)*100.0 if pd.notna(_to_float_or_nan(v)) else v))
-    return out
-
-def pick(df: pd.DataFrame, names: list[str], default=None):
-    for n in names:
-        if n and n in df.columns: return n
-    return default
 
 # =====================================
 # Tabs
@@ -264,7 +247,8 @@ with tabs[0]:
     st.markdown(
         "- *EAD*: Exposición en riesgo (saldo sujeto a crédito).\n"
         "- *EL (Expected Loss): *PD × LGD × EAD.\n"
-        "- *Utilidad*: Ingreso financiero – EL – costos financieros (COF aprox)."
+        "- *Utilidad*: Ingreso financiero – EL – costos financieros (COF aprox).\n"
+        "- *PD ponderado*: promedio ponderado por EAD del PD a nivel cartera."
     )
 
     st.markdown("### ¿Qué cálculos hace el motor aquí?")
@@ -285,13 +269,16 @@ with tabs[0]:
         elb = pick(port, ["EL_optimizado","EL_opt","EL_b"])
         ua  = pick(port, ["Utilidad_actual","utilidad_base","Util_a"])
         ub  = pick(port, ["Utilidad_optimizada","utilidad_opt","Util_b"])
+        pda = pick(port, ["PD_pond_a","PD_pond_base","PD_a","PD_pond"])
+        pdb = pick(port, ["PD_pond_b","PD_pond_opt","PD_b"])
 
-        def g(df, col):
-            return (df[col].iloc[0] if col and col in df.columns else np.nan)
-
-        kpi_row_money("EAD", g(port, ca), g(port, cb), moneda, usdclp, "Exposición total.")
-        kpi_row_money("EL (Pérdida Esperada)", g(port, ela), g(port, elb), moneda, usdclp, "PD×LGD×EAD agregado.")
-        kpi_row_money("Utilidad", g(port, ua), g(port, ub), moneda, usdclp, "Ingreso menos pérdidas y costos.")
+        kpi_row_money("EAD", _first(port, ca), _first(port, cb), moneda, usdclp, "Exposición total.")
+        kpi_row_money("EL (Pérdida Esperada)", _first(port, ela), _first(port, elb), moneda, usdclp, "PD×LGD×EAD agregado.")
+        kpi_row_money("Utilidad", _first(port, ua), _first(port, ub), moneda, usdclp, "Ingreso menos pérdidas y costos.")
+        if pda or pdb:
+            kpi_row_pct("PD ponderado", _first(port, pda)*100 if pda else np.nan,
+                        _first(port, pdb)*100 if pdb else np.nan,
+                        "Promedio ponderado por EAD.")
 
     if seg is not None and not seg.empty:
         st.subheader("Segmento")
@@ -338,12 +325,10 @@ with tabs[1]:
         ein = pick(port, ["EAD_in","EAD_a","EAD_base"])
         eout= pick(port, ["EAD_out","EAD_b","EAD_opt"])
 
-        def g(df, col): return (df[col].iloc[0] if col and col in df.columns else np.nan)
-
-        kpi_row_money("Ingreso total", g(port, ia), g(port, ib), moneda, usdclp, "Intereses tras pricing.")
-        kpi_row_money("Utilidad total", g(port, ua), g(port, ub), moneda, usdclp, "Ingreso – EL – COF.")
+        kpi_row_money("Ingreso total", _first(port, ia), _first(port, ib), moneda, usdclp, "Intereses tras pricing.")
+        kpi_row_money("Utilidad total", _first(port, ua), _first(port, ub), moneda, usdclp, "Ingreso – EL – COF.")
         if ein or eout:
-            kpi_row_money("EAD (in→out)", g(port, ein), g(port, eout), moneda, usdclp, "Cambio de volumen por tasa.")
+            kpi_row_money("EAD (in→out)", _first(port, ein), _first(port, eout), moneda, usdclp, "Cambio de volumen por tasa.")
 
     if seg is not None and not seg.empty:
         st.subheader("Segmento")
@@ -383,13 +368,13 @@ with tabs[2]:
     port = A3.get("incentives_portfolio")
     det  = A3.get("incentives_detail")
     diag = A3.get("incentives_diag_summary")
+    sens = A3.get("incentives_sensitivity")
 
-    # KPI desde detalle (si no hay portfolio)
+    # KPI desde detalle si no hay portfolio agregado
     cost_total, inc_total, roi_val = np.nan, np.nan, np.nan
     if det is not None and not det.empty:
-        # Robustez: buscar columnas candidatas
-        cost_cols = [c for c in det.columns if "cost" in c.lower()]
-        inc_cols  = [c for c in det.columns if any(k in c.lower() for k in ["uplift","ingreso_inc","delta_ingreso"])]
+        cost_cols = [c for c in det.columns if "cost" in c.lower() or "costo" in c.lower()]
+        inc_cols  = [c for c in det.columns if any(k in c.lower() for k in ["uplift","ingreso_inc","delta_ingreso","income_inc"])]
         if cost_cols:
             cost_total = pd.to_numeric(det[cost_cols].sum(axis=1), errors="coerce").fillna(0).sum()
         if inc_cols:
@@ -400,10 +385,9 @@ with tabs[2]:
         ca = pick(port, ["costo","cost_total","costo_total"])
         ia = pick(port, ["ingreso_incremental","uplift_total","ingreso_inc_total"])
         ra = pick(port, ["roi_pct","roi","roi%"])
-        def g(df, col): return (df[col].iloc[0] if col and col in df.columns else np.nan)
-        kpi_row_money("Costo incentivos", g(port, ca) if ca else cost_total, g(port, ca) if ca else cost_total, moneda, usdclp)
-        kpi_row_money("Ingreso incremental", g(port, ia) if ia else inc_total, g(port, ia) if ia else inc_total, moneda, usdclp)
-        st.metric("ROI", fmt_pct_val(g(port, ra) if ra else roi_val))
+        kpi_row_money("Costo incentivos", _first(port, ca) if ca else cost_total, _first(port, ca) if ca else cost_total, moneda, usdclp)
+        kpi_row_money("Ingreso incremental", _first(port, ia) if ia else inc_total, _first(port, ia) if ia else inc_total, moneda, usdclp)
+        st.metric("ROI", fmt_pct_val(_first(port, ra) if ra else roi_val))
     else:
         kpi_row_money("Costo incentivos", cost_total, cost_total, moneda, usdclp)
         kpi_row_money("Ingreso incremental", inc_total, inc_total, moneda, usdclp)
@@ -412,6 +396,9 @@ with tabs[2]:
     if diag is not None and not diag.empty:
         st.subheader("Diagnóstico/Sensibilidad")
         st.dataframe(format_df_auto(diag, moneda, usdclp), use_container_width=True, height=360)
+    if sens is not None and not sens.empty:
+        st.subheader("Sensibilidad (parámetros)")
+        st.dataframe(format_df_auto(sens, moneda, usdclp), use_container_width=True, height=360)
     if det is not None and not det.empty:
         st.subheader("Detalle por cliente")
         st.dataframe(format_df_auto(det, moneda, usdclp), use_container_width=True, height=360)
@@ -446,7 +433,7 @@ with tabs[3]:
     det  = A4.get("capital_detail")
 
     if port is not None and not port.empty:
-        ead_a = pick(port, ["EAD_base","EAD_actual","EAD_a"])
+        ead_a = pick(port, ["EAD_base","EAD_actual","EAD_a","EAD"])
         ead_b = pick(port, ["EAD_opt","EAD_optimizado","EAD_b"])
         el_a  = pick(port, ["EL_base","EL_actual","EL_a"])
         el_b  = pick(port, ["EL_opt","EL_optimizado","EL_b"])
@@ -455,11 +442,9 @@ with tabs[3]:
         k_a   = pick(port, ["K_base","K_a"])
         k_b   = pick(port, ["K_opt","K_b"])
 
-        def g(df, col): return (df[col].iloc[0] if col and col in df.columns else np.nan)
-
-        kpi_row_money("EL", g(port, el_a), g(port, el_b), moneda, usdclp, "Pérdida esperada total.")
-        kpi_row_money("RWA", g(port, rwa_a), g(port, rwa_b), moneda, usdclp, "RW×EAD agregado.")
-        kpi_row_money("Capital (K)", g(port, k_a), g(port, k_b), moneda, usdclp, "K_ratio×RWA.")
+        kpi_row_money("EL", _first(port, el_a), _first(port, el_b), moneda, usdclp, "Pérdida esperada total.")
+        kpi_row_money("RWA", _first(port, rwa_a), _first(port, rwa_b), moneda, usdclp, "RW×EAD agregado.")
+        kpi_row_money("Capital (K)", _first(port, k_a), _first(port, k_b), moneda, usdclp, "K_ratio×RWA.")
 
     if seg is not None and not seg.empty:
         st.subheader("Segmento")
@@ -473,9 +458,8 @@ with tabs[3]:
 # =====================================
 with tabs[4]:
     st.header("Guardrails (Resguardos)")
-    st.markdown(
-        "Límites regulatorios y de negocio verificados para asegurar cumplimiento y robustez."
-    )
+    st.markdown("Límites regulatorios y de negocio verificados para asegurar cumplimiento y robustez.")
+
     GR = load_by_arista(bundle_dir, "GR", "")
     gport = GR.get("guardrails_portfolio")
     gseg  = GR.get("guardrails_segment")
@@ -499,4 +483,4 @@ with tabs[4]:
 # Footer
 # =====================================
 st.markdown("---")
-st.caption("© MVP Bancario — Motor de Optimización (4 aristas). IFRS9/Basilea/Negocio.")
+st.caption("© MVP Bancario — Motor de Optimización (4 aristas). IFRS9 / Basilea / Negocio.")

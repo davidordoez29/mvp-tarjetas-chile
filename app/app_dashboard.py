@@ -15,6 +15,117 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# Defaults resilientes (por si el archivo se recarga parcial)
+DEFAULT_PCT_HINTS   = ["%", "pct", "porc", "pd_", "lgd", "roi", "var_%", "pd_pond", "k_ratio"]
+DEFAULT_MONEY_HINTS = ["monto","ead","el_","ingreso","util","capital","k_","income","cost","exposure","saldo","rwa"]
+DEFAULT_RATE_HINTS  = ["apr","tasa","rate","cof","r_base","r_opt"]
+
+# Crea (o mantiene) los globals solo si no existen
+if "_PCT_HINTS" not in globals():
+    _PCT_HINTS = DEFAULT_PCT_HINTS
+if "_MONEY_HINTS" not in globals():
+    _MONEY_HINTS = DEFAULT_MONEY_HINTS
+if "_RATE_HINTS" not in globals():
+    _RATE_HINTS = DEFAULT_RATE_HINTS
+
+_num_like = re.compile(r"^-?\d+(\.\d+)?$")
+
+def _to_float_or_nan(v):
+    import math, numpy as np
+    if v is None or (isinstance(v, float) and math.isnan(v)): 
+        return np.nan
+    if isinstance(v, (int, float)): 
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip().replace("%", "").replace(",", ".")
+        if _num_like.match(s):
+            try: 
+                return float(s)
+            except Exception: 
+                return np.nan
+        return np.nan
+    return np.nan
+
+def fmt_pct_val(val):
+    import numpy as np
+    if isinstance(val, str):
+        s = val.strip()
+        if s.endswith("%"): 
+            return s.replace(".", ",")
+        if not _num_like.match(s.replace(",", ".")): 
+            return s
+    x = _to_float_or_nan(val)
+    if np.isnan(x):
+        return "—" if (val is None or (isinstance(val, float) and math.isnan(val))) else str(val)
+    return f"{x:.2f}%".replace(".", ",")
+
+def _to_display_currency(val: float, target: str, usdclp: float) -> float:
+    import numpy as np
+    if pd.isna(val): 
+        return np.nan
+    return (float(val) / float(usdclp)) if target.upper() == "USD" else float(val)
+
+def fmt_money_val(val, target: str, usdclp: float) -> str:
+    import math
+    import numpy as np
+    if isinstance(val, str):
+        v = val.strip()
+        if v == "" or v.upper() == "N/A": 
+            return "—"
+        return v
+    if val is None or (isinstance(val, float) and math.isnan(val)): 
+        return "—"
+    x = _to_display_currency(float(val), target, usdclp)
+    if x is None or (isinstance(x, float) and math.isnan(x)): 
+        return "—"
+    neg = x < 0
+    x = abs(x)
+    ent = int(x)
+    dec = int(round((x - ent) * 100))
+    if dec == 100:
+        ent += 1
+        dec = 0
+    ent_str = f"{ent:,}".replace(",", ".")
+    return f"-{ent_str},{dec:02d}" if neg else f"{ent_str},{dec:02d}"
+
+def format_df_auto(df: pd.DataFrame, moneda: str, usdclp: float):
+    """
+    Formatea heurísticamente por nombre de columna.
+    A PRUEBA DE RELOADS: usa fallbacks si los globals no existen.
+    """
+    import numpy as np
+    if df is None or df.empty:
+        return df
+
+    # Fallbacks en cada ejecución para evitar NameError
+    pct_hints   = globals().get("_PCT_HINTS", DEFAULT_PCT_HINTS)
+    money_hints = globals().get("_MONEY_HINTS", DEFAULT_MONEY_HINTS)
+    rate_hints  = globals().get("_RATE_HINTS", DEFAULT_RATE_HINTS)
+
+    out = df.copy()
+    lower = {c: c.lower() for c in out.columns}
+    for c in out.columns:
+        lc = lower[c]
+
+        # porcentaje
+        if any(h in lc for h in pct_hints):
+            out[c] = out[c].apply(fmt_pct_val)
+            continue
+
+        # moneda / montos
+        if any(h in lc for h in money_hints):
+            out[c] = out[c].apply(lambda v: fmt_money_val(v, moneda, usdclp))
+            continue
+
+        # tasa (apr/r_base/r_opt/cof)
+        if any(h in lc for h in rate_hints) or lc.startswith("r_"):
+            def _as_rate(v):
+                x = _to_float_or_nan(v)
+                return fmt_pct_val(x * 100.0) if pd.notna(x) else v
+            out[c] = out[c].apply(_as_rate)
+
+    return out
+
 # =====================================
 # Config inicial
 # =====================================
